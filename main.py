@@ -67,6 +67,8 @@ def root():
 
 def calculate_1rm(weight: float, reps: int) -> float:
     """Calculate estimated 1RM using Epley formula"""
+    if weight == 0:
+        return reps  # For bodyweight, use reps as the metric
     return (weight * reps * 0.0333) + weight
 
 
@@ -78,15 +80,26 @@ def log_pr(pr_data: PRCreate, db: Session = Depends(get_db)):
     - Calculates estimated 1RM
     - Checks if it's a new PR for this exercise
     - Returns PR info with is_new_pr flag
+    - Bodyweight (weight=0) and weighted movements tracked separately
     """
     # Calculate 1RM
     estimated_1rm = calculate_1rm(pr_data.weight, pr_data.reps)
     
-    # Check if this is a new PR
-    best_pr = db.query(PR).filter(
-        PR.user_id == pr_data.user_id,
-        PR.exercise == pr_data.exercise
-    ).order_by(PR.estimated_1rm.desc()).first()
+    # Check if this is a new PR - handle bodyweight vs weighted separately
+    if pr_data.weight == 0:
+        # For bodyweight: compare only against other bodyweight PRs (weight=0)
+        best_pr = db.query(PR).filter(
+            PR.user_id == pr_data.user_id,
+            PR.exercise == pr_data.exercise,
+            PR.weight == 0
+        ).order_by(PR.estimated_1rm.desc()).first()
+    else:
+        # For weighted: compare only against other weighted PRs (weight>0)
+        best_pr = db.query(PR).filter(
+            PR.user_id == pr_data.user_id,
+            PR.exercise == pr_data.exercise,
+            PR.weight > 0
+        ).order_by(PR.estimated_1rm.desc()).first()
     
     is_new_pr = not best_pr or estimated_1rm > best_pr.estimated_1rm
     
