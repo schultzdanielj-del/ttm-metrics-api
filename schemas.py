@@ -16,7 +16,7 @@ class PRCreate(BaseModel):
     user_id: str
     username: str
     exercise: str
-    weight: float = Field(gt=0, description="Weight in lbs")
+    weight: float = Field(..., ge=0)  
     reps: int = Field(gt=0, description="Number of reps")
     message_id: str = "dashboard"
     channel_id: str = "dashboard"
