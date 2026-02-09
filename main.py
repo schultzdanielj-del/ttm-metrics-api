@@ -160,8 +160,21 @@ def get_best_pr(user_id: str, exercise: str, db: Session = Depends(get_db)):
     
     if not best_pr:
         return None
+
     
     return BestPRResponse.from_orm(best_pr)
+    
+@app.get("/api/prs", response_model=List[PRResponse], tags=["PRs"])
+def get_all_prs(limit: int = 1000, db: Session = Depends(get_db)):
+    """
+    Get all PRs across all users (for admin/cleanup purposes)
+    
+    - Returns most recent first
+    - Default limit 1000
+    """
+    prs = db.query(PR).order_by(PR.timestamp.desc()).limit(limit).all()
+    return [PRResponse.from_orm(pr) for pr in prs]
+
 @app.patch("/api/prs/batch", tags=["PRs"])
 def batch_update_pr_exercises(updates: List[dict], db: Session = Depends(get_db)):
     """
