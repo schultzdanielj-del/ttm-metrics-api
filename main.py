@@ -144,6 +144,17 @@ def get_user_prs(user_id: str, exercise: Optional[str] = None, limit: int = 100,
     
     prs = query.order_by(PR.timestamp.desc()).limit(limit).all()
     return [PRResponse.from_orm(pr) for pr in prs]
+    
+@app.get("/api/prs", response_model=List[PRResponse], tags=["PRs"])
+def get_all_prs(limit: int = 1000, db: Session = Depends(get_db)):
+    """
+    Get all PRs across all users (for admin/cleanup purposes)
+    
+    - Returns most recent first
+    - Default limit 1000
+    """
+    prs = db.query(PR).order_by(PR.recorded_at.desc()).limit(limit).all()
+    return [PRResponse.from_orm(pr) for pr in prs]
 
 
 @app.get("/api/prs/{user_id}/best/{exercise}", response_model=Optional[BestPRResponse], tags=["PRs"])
