@@ -153,7 +153,7 @@ def get_all_prs(limit: int = 1000, db: Session = Depends(get_db)):
     - Returns most recent first
     - Default limit 1000
     """
-    prs = db.query(PR).order_by(PR.recorded_at.desc()).limit(limit).all()
+    prs = db.query(PR).order_by(PR.timestamp.desc()).limit(limit).all()
     return [PRResponse.from_orm(pr) for pr in prs]
 
 
