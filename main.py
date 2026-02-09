@@ -162,7 +162,37 @@ def get_best_pr(user_id: str, exercise: str, db: Session = Depends(get_db)):
         return None
     
     return BestPRResponse.from_orm(best_pr)
-
+@app.patch("/api/prs/batch", tags=["PRs"])
+def batch_update_pr_exercises(updates: List[dict], db: Session = Depends(get_db)):
+    """
+    Batch update exercise names for PRs (for cleanup/canonicalization)
+    
+    Example request body:
+    [
+        {"pr_id": 123, "exercise": "incline ez bar tricep extension"},
+        {"pr_id": 124, "exercise": "incline ez bar tricep extension"}
+    ]
+    """
+    updated_count = 0
+    
+    for update in updates:
+        pr_id = update.get("pr_id")
+        new_exercise = update.get("exercise")
+        
+        if not pr_id or not new_exercise:
+            continue
+        
+        pr = db.query(PR).filter(PR.id == pr_id).first()
+        if pr:
+            pr.exercise = new_exercise
+            updated_count += 1
+    
+    db.commit()
+    
+    return {
+        "updated_count": updated_count,
+        "total_requested": len(updates)
+    }
 
 # ============================================================================
 # Workout Plan Endpoints
