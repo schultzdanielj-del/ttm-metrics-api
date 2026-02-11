@@ -6,11 +6,12 @@ Handles all PR logging, workout tracking, and XP management
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+from sqlalchemy import and_
 from typing import List, Optional
 from datetime import datetime, timedelta
 import secrets
 
-from database import get_db, init_db, PR, Workout, WorkoutCompletion, UserXP, DashboardMember, CoreFoodsLog as CoreFoodsLogModel
+from database import get_db, init_db, PR, Workout, WorkoutCompletion, UserXP, DashboardMember, CoreFoodsLog as CoreFoodsLogModel, WeeklyLog, CoreFoodsCheckin
 from schemas import (
     PRCreate, PRResponse, BestPRResponse,
     WorkoutPlanCreate, WorkoutCompletionUpdate, DeloadStatus,
@@ -217,6 +218,54 @@ def batch_update_pr_exercises(updates: List[dict], db: Session = Depends(get_db)
         "updated_count": updated_count,
         "total_requested": len(updates)
     }
+
+@app.delete("/api/prs/message/{message_id}", tags=["PRs"])
+def delete_prs_by_message(message_id: str, db: Session = Depends(get_db)):
+    """Delete all PRs associated with a Discord message ID"""
+    deleted = db.query(PR).filter(PR.message_id == message_id).delete()
+    db.commit()
+    
+    return {
+        "deleted_count": deleted,
+        "message_id": message_id
+    }
+
+
+@app.get("/api/prs/{user_id}/latest", tags=["PRs"])
+def get_latest_prs(user_id: str, limit: int = 5, db: Session = Depends(get_db)):
+    """Get latest N PRs for a user"""
+    prs = db.query(PR).filter(
+        PR.user_id == user_id
+    ).order_by(
+        PR.timestamp.desc()
+    ).limit(limit).all()
+    
+    return [
+        {
+            "exercise": pr.exercise,
+            "weight": pr.weight,
+            "reps": pr.reps,
+            "estimated_1rm": pr.estimated_1rm,
+            "timestamp": pr.timestamp
+        }
+        for pr in prs
+    ]
+
+
+@app.get("/api/prs/count", tags=["PRs"])
+def get_total_pr_count(db: Session = Depends(get_db)):
+    """Get total count of all PRs in database"""
+    from sqlalchemy import func
+    count = db.query(func.count(PR.id)).scalar()
+    return {"total_prs": count}
+
+
+@app.get("/api/prs/{user_id}/count", tags=["PRs"])
+def get_user_pr_count(user_id: str, db: Session = Depends(get_db)):
+    """Get PR count for specific user"""
+    from sqlalchemy import func
+    count = db.query(func.count(PR.id)).filter(PR.user_id == user_id).scalar()
+    return {"user_id": user_id, "pr_count": count}
 
 # ============================================================================
 # Workout Plan Endpoints
@@ -503,34 +552,149 @@ def get_dashboard_member(unique_code: str, db: Session = Depends(get_db)):
 
 
 # ============================================================================
+# Weekly Logs Endpoints
+# ============================================================================
+
+@app.post("/api/weekly-logs", tags=["Weekly Logs"])
+def record_weekly_log(
+    user_id: str,
+    message_id: str,
+    xp_awarded: int,
+    db: Session = Depends(get_db)
+):
+    """Record a weekly log submission"""
+    log = WeeklyLog(
+        user_id=user_id,
+        message_id=message_id,
+        timestamp=datetime.utcnow(),
+        xp_awarded=xp_awarded
+    )
+    db.add(log)
+    db.commit()
+    
+    return {"success": True, "xp_awarded": xp_awarded}
+
+
+@app.get("/api/weekly-logs/{user_id}/can-submit", tags=["Weekly Logs"])
+def can_submit_weekly_log(user_id: str, db: Session = Depends(get_db)):
+    """Check if user can submit weekly log (6+ days since last)"""
+    last_log = db.query(WeeklyLog).filter(
+        WeeklyLog.user_id == user_id
+    ).order_by(
+        WeeklyLog.timestamp.desc()
+    ).first()
+    
+    if not last_log:
+        return {"can_submit": True, "days_since_last": None}
+    
+    days_since = (datetime.utcnow() - last_log.timestamp).days
+    
+    return {
+        "can_submit": days_since >= 6,
+        "days_since_last": days_since
+    }
+
+
+# ============================================================================
 # Core Foods Endpoints
 # ============================================================================
 
 @app.post("/api/core-foods", tags=["Core Foods"])
-def log_core_foods(log: CoreFoodsLog, db: Session = Depends(get_db)):
-    """Log core foods for a date"""
-    # Check if already logged for this date
-    existing = db.query(CoreFoodsLogModel).filter(
-        CoreFoodsLogModel.user_id == log.user_id,
-        CoreFoodsLogModel.date == log.date
+def record_core_foods_checkin(
+    user_id: str,
+    message_id: str,
+    xp_awarded: int,
+    date: Optional[str] = None,
+    protein_servings: Optional[int] = None,
+    veggie_servings: Optional[int] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Record a core foods check-in
+    
+    - Can back-fill up to 2 days in the past
+    - Supports simple mode (just yes/no) or learning mode (individual servings)
+    """
+    
+    # Default to today if not specified
+    if date is None:
+        target_date = datetime.utcnow().date()
+        date = target_date.isoformat()
+    else:
+        # Validate date format
+        try:
+            target_date = datetime.fromisoformat(date).date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+    
+    # Validate date is not in the future
+    today = datetime.utcnow().date()
+    if target_date > today:
+        raise HTTPException(status_code=400, detail="Cannot log future dates")
+    
+    # Validate date is within last 3 days (0, 1, 2 days ago)
+    days_ago = (today - target_date).days
+    if days_ago > 2:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Cannot log dates more than 2 days ago (attempted {days_ago} days ago)"
+        )
+    
+    # Check if already checked in for this date
+    existing = db.query(CoreFoodsCheckin).filter(
+        and_(
+            CoreFoodsCheckin.user_id == user_id,
+            CoreFoodsCheckin.date == date
+        )
     ).first()
     
     if existing:
-        existing.completed = log.completed
-        db.commit()
-        return {"status": "updated", "message": "Core foods log updated"}
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Already checked in for {date}"
+        )
     
-    new_log = CoreFoodsLogModel(
-        user_id=log.user_id,
-        date=log.date,
-        completed=log.completed
+    # Validate servings if provided
+    if protein_servings is not None and (protein_servings < 0 or protein_servings > 4):
+        raise HTTPException(status_code=400, detail="Protein servings must be 0-4")
+    if veggie_servings is not None and (veggie_servings < 0 or veggie_servings > 3):
+        raise HTTPException(status_code=400, detail="Veggie servings must be 0-3")
+    
+    # Create check-in
+    checkin = CoreFoodsCheckin(
+        user_id=user_id,
+        date=date,
+        message_id=message_id,
+        timestamp=datetime.utcnow(),
+        xp_awarded=xp_awarded,
+        protein_servings=protein_servings,
+        veggie_servings=veggie_servings
     )
-    
-    db.add(new_log)
+    db.add(checkin)
     db.commit()
     
-    return {"status": "created", "message": "Core foods logged"}
+    return {
+        "success": True,
+        "date": date,
+        "days_ago": days_ago,
+        "xp_awarded": xp_awarded,
+        "mode": "learning" if protein_servings is not None else "simple"
+    }
 
+
+@app.get("/api/core-foods/{user_id}/can-checkin", tags=["Core Foods"])
+def can_checkin_core_foods(user_id: str, db: Session = Depends(get_db)):
+    """Check if user can check in core foods today"""
+    today = datetime.utcnow().date().isoformat()
+    
+    existing = db.query(CoreFoodsCheckin).filter(
+        and_(
+            CoreFoodsCheckin.user_id == user_id,
+            CoreFoodsCheckin.date == today
+        )
+    ).first()
+    
+    return {"can_checkin": existing is None}
 
 if __name__ == "__main__":
     import uvicorn
