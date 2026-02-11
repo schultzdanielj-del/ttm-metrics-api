@@ -107,7 +107,7 @@ class WeeklyLog(Base):
 
 
 class CoreFoodsCheckin(Base):
-    """Core foods check-ins from Discord (duplicate of CoreFoodsLog for Discord bot compatibility)"""
+    """Core foods check-ins from Discord (supports simple and learning modes)"""
     __tablename__ = "core_foods_checkins"
     
     id = Column(Integer, primary_key=True, index=True)
@@ -116,6 +116,12 @@ class CoreFoodsCheckin(Base):
     message_id = Column(String, nullable=False)
     timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
     xp_awarded = Column(Integer, nullable=False)
+    
+    # Servings breakdown (optional - for "learning mode" in dashboard)
+    # NULL = simple "core foods yes/no" mode
+    # Values = learning mode with individual servings tracked
+    protein_servings = Column(Integer, nullable=True)  # 0-4
+    veggie_servings = Column(Integer, nullable=True)   # 0-3
 
 
 # ============================================================================
