@@ -167,6 +167,44 @@ Returns unique dashboard code.
 GET /api/dashboard/members/{unique_code}
 ```
 
+### Dashboard Endpoints (For Web Dashboard)
+
+**Get user's workouts:**
+```bash
+GET /api/dashboard/{unique_code}/workouts
+```
+Returns user's workout program organized by letter (A, B, etc.)
+
+**Get best PRs:**
+```bash
+GET /api/dashboard/{unique_code}/best-prs
+```
+Returns best PR for each exercise in format: `{"Squat": "315/5", "Bench Press": "225/8"}`
+
+**Get deload status:**
+```bash
+GET /api/dashboard/{unique_code}/deload-status
+```
+Returns completion count for each workout: `{"A": 4, "B": 5}`
+
+**Log workout:**
+```bash
+POST /api/dashboard/{unique_code}/log-workout
+{
+  "workout_letter": "A",
+  "exercises": [
+    {"name": "Squat", "weight": 315, "reps": 5},
+    {"name": "Bench Press", "weight": 225, "reps": 8}
+  ],
+  "core_foods": true
+}
+```
+
+**Get core foods (last 7 days):**
+```bash
+GET /api/dashboard/{unique_code}/core-foods
+```
+
 ### Core Foods
 
 **Log core foods:**
@@ -342,6 +380,39 @@ All requests/responses are validated with Pydantic:
 2. **Deploy to Railway** - Get it running in production
 3. **Update Discord bot** - Call API instead of direct DB access
 4. **Update Dashboard** - Call API instead of direct DB access
+
+## Setting Up Dashboard Users
+
+### 1. Create Dashboard Member
+
+Use the helper script:
+```bash
+python create_dashboard_user.py <user_id> <username>
+```
+
+Example:
+```bash
+python create_dashboard_user.py 123456789 JohnDoe
+```
+
+This generates a unique access code for the user.
+
+### 2. Add Workout Plan
+
+Use the helper script:
+```bash
+python add_workout_plan.py <user_id>
+```
+
+Or manually add exercises to the database. Edit `add_workout_plan.py` to customize the program.
+
+### 3. Share Dashboard Link
+
+Give the user:
+- Dashboard URL: https://dashboard-production-79f2.up.railway.app
+- Their unique access code
+
+They enter the code to access their personalized dashboard.
 
 ## Support
 

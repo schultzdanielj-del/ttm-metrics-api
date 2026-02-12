@@ -551,6 +551,290 @@ def get_dashboard_member(unique_code: str, db: Session = Depends(get_db)):
     return member
 
 
+@app.get("/api/dashboard/{unique_code}/workouts", tags=["Dashboard"])
+def get_dashboard_workouts(unique_code: str, db: Session = Depends(get_db)):
+    """
+    Get user's workout program organized by workout letter (A, B, C, etc.)
+    Returns exercises in order for each workout
+    """
+    # Verify unique code and get user_id
+    member = db.query(DashboardMember).filter(
+        DashboardMember.unique_code == unique_code
+    ).first()
+    
+    if not member:
+        raise HTTPException(status_code=404, detail="Invalid dashboard code")
+    
+    # Get all workouts for this user
+    workouts = db.query(Workout).filter(
+        Workout.user_id == member.user_id
+    ).order_by(
+        Workout.workout_letter, Workout.exercise_order
+    ).all()
+    
+    # Organize by workout letter
+    workout_dict = {}
+    for workout in workouts:
+        if workout.workout_letter not in workout_dict:
+            workout_dict[workout.workout_letter] = []
+        
+        workout_dict[workout.workout_letter].append({
+            "name": workout.exercise_name,
+            "special_logging": workout.special_logging,
+            "setup_notes": workout.setup_notes,
+            "video_link": workout.video_link
+        })
+    
+    return {
+        "user_id": member.user_id,
+        "username": member.username,
+        "workouts": workout_dict
+    }
+
+
+@app.get("/api/dashboard/{unique_code}/best-prs", tags=["Dashboard"])
+def get_dashboard_best_prs(unique_code: str, db: Session = Depends(get_db)):
+    """
+    Get best PR for each exercise in user's program
+    Returns in format: {exercise_name: "weight/reps"}
+    """
+    # Verify unique code and get user_id
+    member = db.query(DashboardMember).filter(
+        DashboardMember.unique_code == unique_code
+    ).first()
+    
+    if not member:
+        raise HTTPException(status_code=404, detail="Invalid dashboard code")
+    
+    # Get all exercises in user's program
+    workouts = db.query(Workout).filter(
+        Workout.user_id == member.user_id
+    ).all()
+    
+    # Get best PR for each exercise
+    best_prs = {}
+    for workout in workouts:
+        # Query for best PR for this exercise
+        best_pr = db.query(PR).filter(
+            PR.user_id == member.user_id,
+            PR.exercise == workout.exercise_name
+        ).order_by(PR.estimated_1rm.desc()).first()
+        
+        if best_pr:
+            # Format as "weight/reps" or "BW/reps" for bodyweight
+            if best_pr.weight == 0:
+                best_prs[workout.exercise_name] = f"BW/{best_pr.reps}"
+            else:
+                # Show weight as integer if it's a whole number
+                weight_str = str(int(best_pr.weight)) if best_pr.weight == int(best_pr.weight) else str(best_pr.weight)
+                best_prs[workout.exercise_name] = f"{weight_str}/{best_pr.reps}"
+    
+    return best_prs
+
+
+@app.get("/api/dashboard/{unique_code}/deload-status", tags=["Dashboard"])
+def get_dashboard_deload_status(unique_code: str, db: Session = Depends(get_db)):
+    """
+    Get completion count for each workout (for deload tracking)
+    Returns: {A: 4, B: 5, etc.}
+    """
+    # Verify unique code and get user_id
+    member = db.query(DashboardMember).filter(
+        DashboardMember.unique_code == unique_code
+    ).first()
+    
+    if not member:
+        raise HTTPException(status_code=404, detail="Invalid dashboard code")
+    
+    # Get completion counts
+    completions = db.query(WorkoutCompletion).filter(
+        WorkoutCompletion.user_id == member.user_id
+    ).all()
+    
+    deload_status = {}
+    for completion in completions:
+        deload_status[completion.workout_letter] = completion.completion_count
+    
+    # If no completions exist for workouts, initialize to 0
+    workouts = db.query(Workout.workout_letter).filter(
+        Workout.user_id == member.user_id
+    ).distinct().all()
+    
+    for (letter,) in workouts:
+        if letter not in deload_status:
+            deload_status[letter] = 0
+    
+    return deload_status
+
+
+@app.post("/api/dashboard/{unique_code}/log-workout", tags=["Dashboard"])
+def log_dashboard_workout(
+    unique_code: str,
+    workout_data: dict,
+    db: Session = Depends(get_db)
+):
+    """
+    Log a workout from dashboard
+    
+    Expected format:
+    {
+        "workout_letter": "A",
+        "exercises": [
+            {"name": "Squat", "weight": 315, "reps": 5},
+            {"name": "Bench Press", "weight": 225, "reps": 8}
+        ],
+        "core_foods": true
+    }
+    """
+    # Verify unique code and get user_id
+    member = db.query(DashboardMember).filter(
+        DashboardMember.unique_code == unique_code
+    ).first()
+    
+    if not member:
+        raise HTTPException(status_code=404, detail="Invalid dashboard code")
+    
+    workout_letter = workout_data.get("workout_letter")
+    exercises = workout_data.get("exercises", [])
+    core_foods = workout_data.get("core_foods", False)
+    
+    if not workout_letter:
+        raise HTTPException(status_code=400, detail="workout_letter required")
+    
+    if not exercises:
+        raise HTTPException(status_code=400, detail="At least one exercise required")
+    
+    # Log each exercise as PR
+    prs_logged = []
+    for exercise in exercises:
+        exercise_name = exercise.get("name")
+        weight = float(exercise.get("weight", 0))
+        reps = int(exercise.get("reps", 0))
+        
+        if not exercise_name or reps == 0:
+            continue
+        
+        # Calculate 1RM
+        estimated_1rm = calculate_1rm(weight, reps)
+        
+        # Check if new PR
+        if weight == 0:
+            best_pr = db.query(PR).filter(
+                PR.user_id == member.user_id,
+                PR.exercise == exercise_name,
+                PR.weight == 0
+            ).order_by(PR.estimated_1rm.desc()).first()
+        else:
+            best_pr = db.query(PR).filter(
+                PR.user_id == member.user_id,
+                PR.exercise == exercise_name,
+                PR.weight > 0
+            ).order_by(PR.estimated_1rm.desc()).first()
+        
+        is_new_pr = not best_pr or estimated_1rm > best_pr.estimated_1rm
+        
+        # Create PR record
+        new_pr = PR(
+            user_id=member.user_id,
+            username=member.username,
+            exercise=exercise_name,
+            weight=weight,
+            reps=reps,
+            estimated_1rm=estimated_1rm,
+            message_id="dashboard",
+            channel_id="dashboard",
+            timestamp=datetime.utcnow()
+        )
+        
+        db.add(new_pr)
+        prs_logged.append({
+            "exercise": exercise_name,
+            "weight": weight,
+            "reps": reps,
+            "is_new_pr": is_new_pr
+        })
+    
+    # Update workout completion count
+    completion = db.query(WorkoutCompletion).filter(
+        WorkoutCompletion.user_id == member.user_id,
+        WorkoutCompletion.workout_letter == workout_letter
+    ).first()
+    
+    if completion:
+        completion.completion_count += 1
+        completion.last_workout_date = datetime.utcnow()
+    else:
+        completion = WorkoutCompletion(
+            user_id=member.user_id,
+            workout_letter=workout_letter,
+            completion_count=1,
+            last_workout_date=datetime.utcnow()
+        )
+        db.add(completion)
+    
+    # Log core foods if checked
+    if core_foods:
+        today = datetime.utcnow().date().isoformat()
+        
+        # Check if already logged today
+        existing = db.query(CoreFoodsCheckin).filter(
+            and_(
+                CoreFoodsCheckin.user_id == member.user_id,
+                CoreFoodsCheckin.date == today
+            )
+        ).first()
+        
+        if not existing:
+            core_foods_checkin = CoreFoodsCheckin(
+                user_id=member.user_id,
+                date=today,
+                message_id="dashboard",
+                timestamp=datetime.utcnow(),
+                xp_awarded=0  # Dashboard doesn't award XP for now
+            )
+            db.add(core_foods_checkin)
+    
+    db.commit()
+    
+    return {
+        "success": True,
+        "workout_letter": workout_letter,
+        "prs_logged": prs_logged,
+        "core_foods_logged": core_foods,
+        "new_completion_count": completion.completion_count
+    }
+
+
+@app.get("/api/dashboard/{unique_code}/core-foods", tags=["Dashboard"])
+def get_dashboard_core_foods(unique_code: str, db: Session = Depends(get_db)):
+    """
+    Get last 7 days of core foods check-ins
+    Returns: {date: true/false}
+    """
+    # Verify unique code and get user_id
+    member = db.query(DashboardMember).filter(
+        DashboardMember.unique_code == unique_code
+    ).first()
+    
+    if not member:
+        raise HTTPException(status_code=404, detail="Invalid dashboard code")
+    
+    # Get last 7 days
+    seven_days_ago = datetime.utcnow() - timedelta(days=7)
+    
+    checkins = db.query(CoreFoodsCheckin).filter(
+        CoreFoodsCheckin.user_id == member.user_id,
+        CoreFoodsCheckin.timestamp >= seven_days_ago
+    ).all()
+    
+    # Build dict of dates
+    core_foods_dict = {}
+    for checkin in checkins:
+        core_foods_dict[checkin.date] = True
+    
+    return core_foods_dict
+
+
 # ============================================================================
 # Weekly Logs Endpoints
 # ============================================================================
