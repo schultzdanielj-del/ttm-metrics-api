@@ -133,7 +133,8 @@ class DashboardMember(Base):
     __tablename__ = "dashboard_members"
     
     user_id = Column(String, primary_key=True, index=True)
-    username = Column(String, nullable=False)
+    username = Column(String, nullable=False)  # First name only (e.g., "Dan")
+    full_name = Column(String, nullable=True)  # Full name (e.g., "Dan Schultz")
     unique_code = Column(String, unique=True, index=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 

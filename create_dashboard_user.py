@@ -1,65 +1,83 @@
 #!/usr/bin/env python3
 """
-Script to create dashboard members and generate unique access codes
-Run this to give users access to the dashboard
+Create a dashboard member - supports Discord users and non-Discord users
+
+Usage:
+    # Discord user
+    python create_dashboard_user.py --discord-id 718992882182258769 --name "Dan Schultz"
+    
+    # Non-Discord user  
+    python create_dashboard_user.py --name "John Smith"
 """
 
 import requests
-import sys
+import argparse
+import secrets
 
-API_URL = "https://ttm-metrics-api-production.up.railway.app"
+API_BASE_URL = "https://ttm-metrics-api-production.up.railway.app"
 
-def create_dashboard_member(user_id: str, username: str):
+def create_dashboard_member(discord_id, full_name):
     """
-    Create a dashboard member and get their unique access code
+    Create a dashboard member with unique access code
+    
+    Args:
+        discord_id: Discord user ID (or None for non-Discord users)
+        full_name: User's full name (e.g., "Dan Schultz")
     """
+    # Generate user_id
+    if discord_id:
+        user_id = str(discord_id)
+    else:
+        # For non-Discord users, generate a unique ID with 'ND_' prefix
+        user_id = f"ND_{secrets.token_hex(8)}"
+    
+    # Extract first name
+    first_name = full_name.split()[0]
+    
+    print(f"Creating dashboard member...")
+    print(f"User ID: {user_id}")
+    print(f"Full Name: {full_name}")
+    print(f"First Name: {first_name}")
+    print()
+    
+    # Create dashboard member via API
     response = requests.post(
-        f"{API_URL}/api/dashboard/members",
+        f"{API_BASE_URL}/api/dashboard/members",
         json={
             "user_id": user_id,
-            "username": username
+            "username": first_name,  # Store first name only
+            "full_name": full_name    # Store full name
         }
     )
     
     if response.status_code == 200:
         data = response.json()
-        print(f"\n✅ Dashboard access created for {username}")
-        print(f"User ID: {data['user_id']}")
-        print(f"Access Code: {data['unique_code']}")
-        print(f"\nShare this link with {username}:")
-        print(f"https://dashboard-production-79f2.up.railway.app")
-        print(f"\nThey should enter this code: {data['unique_code']}")
-        return data
+        unique_code = data['unique_code']
+        
+        print("✅ Dashboard member created!")
+        print()
+        print(f"User ID: {user_id}")
+        print(f"Name: {full_name}")
+        print(f"First Name: {first_name}")
+        print(f"Unique Code: {unique_code}")
+        print()
+        print(f"Dashboard URL:")
+        print(f"https://dashboard-production-79f2.up.railway.app/{unique_code}")
+        print()
+        print("Next step: Add workout plan")
+        print(f"python add_workout_plan.py {user_id}")
+        
+        return unique_code
     else:
         print(f"❌ Error: {response.status_code}")
         print(response.text)
         return None
 
-def create_workout_plan(user_id: str, workouts: dict):
-    """
-    Create workout plan for a user
-    workouts: {
-        'A': [('Squat', None), ('Bench Press', None)],
-        'B': [('Deadlift', None), ('Overhead Press', None)]
-    }
-    """
-    # This would need an endpoint - for now, add exercises manually to database
-    print(f"\n⚠️  Note: You'll need to add workout exercises to the database manually")
-    print(f"User ID: {user_id}")
-    print("Workouts:")
-    for letter, exercises in workouts.items():
-        print(f"  Workout {letter}:")
-        for idx, (exercise, notes) in enumerate(exercises, 1):
-            print(f"    {idx}. {exercise}")
-
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("Usage: python create_dashboard_user.py <user_id> <username>")
-        print("\nExample:")
-        print("  python create_dashboard_user.py 123456789 JohnDoe")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description='Create a dashboard member')
+    parser.add_argument('--discord-id', type=str, help='Discord user ID (optional)')
+    parser.add_argument('--name', type=str, required=True, help='Full name (e.g., "Dan Schultz")')
     
-    user_id = sys.argv[1]
-    username = sys.argv[2]
+    args = parser.parse_args()
     
-    create_dashboard_member(user_id, username)
+    create_dashboard_member(args.discord_id, args.name)
