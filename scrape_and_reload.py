@@ -35,7 +35,6 @@ DISCORD_BOT_TOKEN = os.getenv("TTM_BOT_TOKEN", "")
 API_BASE_URL = os.getenv("API_BASE_URL", "https://ttm-metrics-api-production.up.railway.app")
 PR_CHANNEL_ID = "1459000944028028970"
 
-# Discord user ID -> (username for API, display name)
 USER_MAP = {
     "718992882182258769": ("dans4729", "Dan Schultz"),
     "919580721922859008": ("feras", "Feras"),
@@ -48,14 +47,13 @@ USER_MAP = {
 BOT_IDS = set()
 
 # =============================================================================
-# Exercise Name Normalization (finalized version)
+# Exercise Name Normalization
 # =============================================================================
 
 def normalize_exercise_name(exercise: str, weight: Optional[float] = None) -> str:
     if exercise.strip().startswith('*'):
         return ""
 
-    # 1. PREPROCESSING
     exercise = exercise.lower().strip()
     exercise = re.sub(r'\s+', ' ', exercise)
     exercise = exercise.replace('.', '').replace(',', '')
@@ -63,7 +61,6 @@ def normalize_exercise_name(exercise: str, weight: Optional[float] = None) -> st
     exercise = exercise.replace('-', ' ')
     exercise = re.sub(r'\s+', ' ', exercise).strip()
 
-    # 2. TYPO CORRECTIONS
     typo_map = [
         (r'\bweighte\b', 'weighted'),
         (r'\bex bar\b', 'ez bar'),
@@ -79,11 +76,9 @@ def normalize_exercise_name(exercise: str, weight: Optional[float] = None) -> st
     for pattern, correction in typo_map:
         exercise = re.sub(pattern, correction, exercise)
 
-    # 3. STRIP "THE"
     if exercise.startswith('the '):
         exercise = exercise[4:]
 
-    # 4. ABBREVIATION EXPANSION
     exercise = re.sub(r'\bdb\b', 'dumbbell', exercise)
     exercise = re.sub(r'\bbb\b', 'barbell', exercise)
     exercise = re.sub(r'\bbw\b', 'bodyweight', exercise)
@@ -105,7 +100,6 @@ def normalize_exercise_name(exercise: str, weight: Optional[float] = None) -> st
 
     exercise = re.sub(r'\buh\b', 'underhand', exercise)
 
-    # 5. EQUIPMENT SYNONYM NORMALIZATION
     exercise = re.sub(r'\bsuspension trainer\b', 'trx', exercise)
     exercise = re.sub(r'\bsuspension\b', 'trx', exercise)
     exercise = re.sub(r'\bcables\b', 'cable', exercise)
@@ -124,7 +118,6 @@ def normalize_exercise_name(exercise: str, weight: Optional[float] = None) -> st
     if 'chinup' in exercise or 'pullup' in exercise:
         exercise = re.sub(r'\bbanded\b', 'band assisted', exercise)
 
-    # 6. COMPOUND WORD NORMALIZATION
     compound_words = [
         ('chin up', 'chinup'), ('chin ups', 'chinups'),
         ('pull up', 'pullup'), ('pull ups', 'pullups'),
@@ -138,7 +131,6 @@ def normalize_exercise_name(exercise: str, weight: Optional[float] = None) -> st
     for spaced, compound in compound_words:
         exercise = exercise.replace(spaced, compound)
 
-    # 7. PLURAL TO SINGULAR NORMALIZATION
     plural_map = [
         (r'\braises\b', 'raise'),
         (r'\bextensions\b', 'extension'),
@@ -173,7 +165,6 @@ def normalize_exercise_name(exercise: str, weight: Optional[float] = None) -> st
     for pattern, replacement in plural_map:
         exercise = re.sub(pattern, replacement, exercise)
 
-    # 8. POSITION & MODIFIER STANDARDIZATION
     exercise = re.sub(r'\bpause rep\b', 'paused', exercise)
     exercise = re.sub(r'\bunderhand grip\b', 'underhand', exercise)
     exercise = re.sub(r'\boverhand grip\b', 'overhand', exercise)
@@ -182,16 +173,16 @@ def normalize_exercise_name(exercise: str, weight: Optional[float] = None) -> st
     exercise = re.sub(r'\bglut\b', 'glute', exercise)
     if exercise.endswith(' bench') and 'press' not in exercise:
         exercise = exercise + ' press'
-    # Word order: "dumbbell seated X" -> "seated dumbbell X"
     exercise = re.sub(r'\bdumbbell (seated|standing|incline|flat|decline)\b', r'\1 dumbbell', exercise)
-    # "trx bicep tricep extension" -> "trx tricep extension"
+    # TRX exercise normalization
     exercise = re.sub(r'\btrx bicep tricep\b', 'trx tricep', exercise)
-    # Strip trailing descriptors
+    if re.search(r'\btrx bicep\b', exercise) and 'curl' not in exercise:
+        exercise = re.sub(r'\btrx bicep\b', 'trx bicep curl', exercise)
+    if re.search(r'\btrx tricep\b', exercise) and 'extension' not in exercise:
+        exercise = re.sub(r'\btrx tricep\b', 'trx tricep extension', exercise)
     exercise = re.sub(r'\s+\d+\s*second.*$', '', exercise)
     exercise = re.sub(r'\s+(each|per)\s+side$', '', exercise)
     exercise = re.sub(r'\s+x\d+$', '', exercise)
-
-    # 9. EXERCISE-SPECIFIC RULES
 
     if 'lateral' in exercise and 'raise' not in exercise:
         exercise = re.sub(r'\blateral(s)?\b', 'lateral raise', exercise)
@@ -309,13 +300,11 @@ def normalize_exercise_name(exercise: str, weight: Optional[float] = None) -> st
 
     exercise = re.sub(r'\b\d+ \d+ \d+\b', '', exercise)
 
-    # 10. INCLINE ANGLE NORMALIZATION
     if 'press' in exercise:
         exercise = re.sub(r'\b(30 degree|low) incline\b', 'low incline', exercise)
         exercise = re.sub(r'\b(60 degree|high|steep) incline\b', 'high incline', exercise)
         exercise = re.sub(r'\b45 degree incline\b', 'incline', exercise)
 
-    # 11. REMOVE DUPLICATE CONSECUTIVE WORDS
     words = exercise.split()
     if words:
         deduplicated = [words[0]]
@@ -339,7 +328,6 @@ def parse_weight_reps(text: str) -> List[Tuple[str, float, int]]:
     if not line:
         return results
 
-    # Skip non-PR content
     skip_patterns = [
         r'^core\s*foods?\s*(eaten|checked|done)',
         r'^ate\s*(my|the)?\s*core\s*foods?',
@@ -361,11 +349,9 @@ def parse_weight_reps(text: str) -> List[Tuple[str, float, int]]:
         if re.match(pattern, line, re.IGNORECASE):
             return results
 
-    # Skip lines too long to be a PR
     if len(line) > 120:
         return results
 
-    # Pattern 1: "Exercise Name - Weight lbs x Reps (optional notes)"
     match_dash = re.match(
         r'^(.+?)\s*[-\u2013]\s*(\d+\.?\d*)\s*(?:lbs?)?\s*x\s*(\d+)',
         line, re.IGNORECASE
@@ -379,7 +365,6 @@ def parse_weight_reps(text: str) -> List[Tuple[str, float, int]]:
             results.append((normalized, weight, reps))
         return results
 
-    # Pattern 2: "Exercise Name Weight/Reps" or "Exercise Name BW/Reps"
     match_slash = re.match(
         r'^(.+?)\s+(bw|\d+\.?\d*)\s*/\s*(\d+)',
         line, re.IGNORECASE
@@ -394,7 +379,6 @@ def parse_weight_reps(text: str) -> List[Tuple[str, float, int]]:
             results.append((normalized, weight, reps))
         return results
 
-    # Pattern 3: "Exercise Name WeightxReps"
     match_x = re.match(
         r'^(.+?)\s+(\d+\.?\d*)\s*x\s*(\d+)',
         line, re.IGNORECASE
@@ -566,13 +550,11 @@ def main():
         print("Set it with: export TTM_BOT_TOKEN=your_token_here")
         sys.exit(1)
 
-    # Step 1: Fetch all messages
     print("Step 1: Fetching all messages from PR channel...")
     messages = fetch_all_messages(PR_CHANNEL_ID)
     print(f"  Total messages fetched: {len(messages)}")
     print()
 
-    # Step 2: Parse messages into PR records
     print("Step 2: Parsing messages for PR data...")
     parsed_prs = []
     skipped_authors = set()
@@ -615,7 +597,6 @@ def main():
         print(f"  Skipped unknown authors: {skipped_authors}")
     print()
 
-    # Step 3: Summary by user
     print("Step 3: Summary by user:")
     user_counts = {}
     for pr in parsed_prs:
@@ -625,7 +606,6 @@ def main():
         print(f"  {name}: {count} PRs")
     print()
 
-    # Step 4: Show unique exercises
     print("Step 4: Unique normalized exercise names:")
     exercises = set()
     for pr in parsed_prs:
@@ -635,7 +615,6 @@ def main():
     print(f"  Total unique exercises: {len(exercises)}")
     print()
 
-    # Step 5: Show sample PRs
     print("Step 5: Sample parsed PRs (first 20):")
     for pr in parsed_prs[:20]:
         w = "BW" if pr["weight"] == 0 else f"{pr['weight']}"
@@ -650,18 +629,15 @@ def main():
         print("=" * 60)
         return
 
-    # Step 6: Optionally wipe existing data
     if mode == "wipe_and_execute":
         print("Step 6: Wiping existing PRs from database...")
         wipe_all_prs()
         print()
 
-    # Step 7: Get existing message IDs for dedup
     print("Step 7: Checking for existing records (deduplication)...")
     existing_ids = get_existing_message_ids()
     print(f"  Existing message_ids in database: {len(existing_ids)}")
 
-    # Step 8: Insert new PRs
     print("Step 8: Inserting PRs...")
     inserted = 0
     skipped_dedup = 0
@@ -701,7 +677,6 @@ def main():
     print(f"  Errors: {errors}")
     print("=" * 60)
 
-    # Step 9: Verify
     print()
     print("Step 9: Verification...")
     final_count = get_current_pr_count()
