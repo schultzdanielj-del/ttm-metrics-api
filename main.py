@@ -29,7 +29,7 @@ from config import XP_REWARDS_API, XP_ENABLED
 app = FastAPI(
     title="TTM Metrics API",
     description="Three Target Method - Fitness tracking and gamification API",
-    version="1.3.0"
+    version="1.3.1"
 )
 
 app.add_middleware(
@@ -48,68 +48,109 @@ def startup_event():
 
 @app.get("/")
 def root():
-    return {"status": "healthy", "service": "TTM Metrics API", "version": "1.3.0"}
+    return {"status": "healthy", "service": "TTM Metrics API", "version": "1.3.1"}
 
 
 # ============================================================================
-# Helpers
+# Exercise Name Matching
+# ============================================================================
+
+# Words that are noise/filler and should be stripped before matching
+_STRIP_WORDS = {
+    'grip', 'machine', 'cable', 'loaded', 'the', 'a', 'an', 'with', 'on',
+    'non', 'alternating', 'style',
+}
+
+# Abbreviation expansions
+_EXPANSIONS = {
+    'db': 'dumbbell',
+    'rdf': 'rear delt fly',
+    'uh': 'underhand',
+    'oh': 'overhead',
+    'bb': 'barbell',
+    'bw': 'bodyweight',
+    'atg': 'ass to grass',
+}
+
+
+def _normalize_exercise_key(name: str) -> str:
+    """
+    Normalize an exercise name to a canonical key for matching.
+    Expands abbreviations, strips noise words, singularizes, lowercases, sorts tokens.
+    """
+    k = name.lower().strip()
+    k = re.sub(r'[^a-z0-9\s]', ' ', k)
+    k = re.sub(r'\s+', ' ', k)
+    
+    # Expand abbreviations
+    tokens = k.split()
+    expanded = []
+    for t in tokens:
+        if t in _EXPANSIONS:
+            expanded.extend(_EXPANSIONS[t].split())
+        else:
+            expanded.append(t)
+    
+    # Singularize common exercise suffixes
+    singularized = []
+    for t in expanded:
+        for plural, singular in [
+            ('pulldowns', 'pulldown'), ('pullups', 'pullup'), ('chinups', 'chinup'),
+            ('curls', 'curl'), ('raises', 'raise'), ('rows', 'row'),
+            ('flys', 'fly'), ('flies', 'fly'), ('extensions', 'extension'),
+            ('pushdowns', 'pushdown'), ('lunges', 'lunge'), ('squats', 'squat'),
+            ('thrusts', 'thrust'), ('bridges', 'bridge'), ('planks', 'plank'),
+            ('situps', 'situp'), ('crunches', 'crunch'), ('hypers', 'hyper'),
+            ('shrugs', 'shrug'), ('skullcrushers', 'skullcrusher'), ('presses', 'press'),
+            ('rollouts', 'rollout'), ('rotations', 'rotation'),
+        ]:
+            if t == plural:
+                t = singular
+                break
+        singularized.append(t)
+    
+    # Strip noise words
+    cleaned = [t for t in singularized if t not in _STRIP_WORDS and len(t) > 0]
+    
+    # Sort for order-independent matching
+    return ' '.join(sorted(cleaned))
+
+
+def _exercise_similarity(name_a: str, name_b: str) -> float:
+    """
+    Score how similar two exercise names are (0.0 - 1.0).
+    Uses normalized token overlap with Jaccard-like scoring.
+    """
+    nk_a = _normalize_exercise_key(name_a)
+    nk_b = _normalize_exercise_key(name_b)
+    
+    # Exact normalized match
+    if nk_a == nk_b:
+        return 1.0
+    
+    tokens_a = set(nk_a.split())
+    tokens_b = set(nk_b.split())
+    
+    if not tokens_a or not tokens_b:
+        return 0.0
+    
+    overlap = tokens_a & tokens_b
+    # Use the smaller set as denominator (so "Seated DB Curls" matching
+    # "seated underhand dumbbell curl" scores on how much of the shorter
+    # name is covered)
+    min_len = min(len(tokens_a), len(tokens_b))
+    
+    return len(overlap) / min_len if min_len > 0 else 0.0
+
+
+# ============================================================================
+# Core Helpers
 # ============================================================================
 
 def calculate_1rm(weight: float, reps: int) -> float:
     if weight == 0:
         return reps
     return (weight * reps * 0.0333) + weight
-
-
-def _normalize_exercise_key(name: str) -> str:
-    """
-    Normalize an exercise name to a canonical key for matching.
-    Both workout plan names and PR names get passed through this
-    so they match regardless of how they were originally entered.
-    
-    Examples:
-        "Single Arm DB Floor Press" -> "single arm dumbbell floor press"
-        "single arm dumbbell floor press" -> "single arm dumbbell floor press"
-        "Head Supported RDF" -> "head supported rear delt fly"
-        "Chest Supported DB Rows" -> "chest supported dumbbell row"
-    """
-    k = name.lower().strip()
-    k = re.sub(r'\s+', ' ', k)
-    # Expand abbreviations
-    k = re.sub(r'\bdb\b', 'dumbbell', k)
-    k = re.sub(r'\bez\b', 'ez', k)
-    k = re.sub(r'\brdf\b', 'rear delt fly', k)
-    k = re.sub(r'\bhs\b', 'head supported', k)
-    k = re.sub(r'\batg\b', 'atg', k)
-    k = re.sub(r'\btrx\b', 'trx', k)
-    k = re.sub(r'\bbw\b', 'bodyweight', k)
-    # Normalize plurals
-    k = re.sub(r'pulldowns\b', 'pulldown', k)
-    k = re.sub(r'pullups\b', 'pullup', k)
-    k = re.sub(r'chinups\b', 'chinup', k)
-    k = re.sub(r'curls\b', 'curl', k)
-    k = re.sub(r'raises\b', 'raise', k)
-    k = re.sub(r'rows\b', 'row', k)
-    k = re.sub(r'flys\b', 'fly', k)
-    k = re.sub(r'flies\b', 'fly', k)
-    k = re.sub(r'extensions\b', 'extension', k)
-    k = re.sub(r'pushdowns\b', 'pushdown', k)
-    k = re.sub(r'lunges\b', 'lunge', k)
-    k = re.sub(r'squats\b', 'squat', k)
-    k = re.sub(r'thrusts\b', 'thrust', k)
-    k = re.sub(r'bridges\b', 'bridge', k)
-    k = re.sub(r'planks\b', 'plank', k)
-    k = re.sub(r'situps\b', 'situp', k)
-    k = re.sub(r'crunches\b', 'crunch', k)
-    k = re.sub(r'hypers\b', 'hyper', k)
-    k = re.sub(r'shrugs\b', 'shrug', k)
-    k = re.sub(r'skullcrushers\b', 'skullcrusher', k)
-    # Remove common filler words that differ between sources
-    k = re.sub(r'\bmachine\b', '', k)
-    k = re.sub(r'\bcable\s*machine\b', 'cable', k)
-    # Collapse whitespace again
-    k = re.sub(r'\s+', ' ', k).strip()
-    return k
 
 
 def _resolve_member(unique_code: str, db: Session) -> DashboardMember:
@@ -137,34 +178,71 @@ def _format_pr(pr) -> str:
     return f"{w}/{pr.reps}"
 
 
+def _find_best_pr_match(db: Session, user_id: str, workout_exercise_name: str):
+    """
+    Find the best PR for a workout exercise, using fuzzy matching.
+    Returns (best_pr_record, matched_pr_exercise_name) or (None, None).
+    
+    Strategy:
+    1. Try exact match
+    2. Try normalized key match
+    3. Try fuzzy similarity (threshold >= 0.7)
+    """
+    # 1. Exact match
+    best = _get_best_pr_for_exercise(db, user_id, workout_exercise_name)
+    if best:
+        return best, workout_exercise_name
+    
+    # Get all PR exercise names for this user
+    all_pr_exercises = db.query(PR.exercise).filter(PR.user_id == user_id).distinct().all()
+    pr_names = [name for (name,) in all_pr_exercises]
+    
+    if not pr_names:
+        return None, None
+    
+    # 2. Normalized key match
+    nk = _normalize_exercise_key(workout_exercise_name)
+    for pr_name in pr_names:
+        if _normalize_exercise_key(pr_name) == nk:
+            best = _get_best_pr_for_exercise(db, user_id, pr_name)
+            if best:
+                return best, pr_name
+    
+    # 3. Fuzzy similarity match
+    best_score = 0.0
+    best_match_name = None
+    for pr_name in pr_names:
+        score = _exercise_similarity(workout_exercise_name, pr_name)
+        if score > best_score:
+            best_score = score
+            best_match_name = pr_name
+    
+    if best_score >= 0.7 and best_match_name:
+        best = _get_best_pr_for_exercise(db, user_id, best_match_name)
+        if best:
+            return best, best_match_name
+    
+    return None, None
+
+
 def _build_best_prs_for_workouts(db: Session, user_id: str, workouts: dict) -> dict:
     """
     Build best_prs dict keyed by workout exercise name (as the frontend expects).
-    Uses normalized keys to match workout names against PR names in the database.
+    Uses normalized keys + fuzzy fallback to match workout names against PR names.
     """
-    # Get all PRs for this user, grouped by exercise
-    all_pr_exercises = db.query(PR.exercise).filter(PR.user_id == user_id).distinct().all()
-    
-    # Build a lookup: normalized_key -> (best_pr_record, original_pr_exercise_name)
-    pr_lookup = {}
-    for (pr_exercise_name,) in all_pr_exercises:
-        nk = _normalize_exercise_key(pr_exercise_name)
-        best = _get_best_pr_for_exercise(db, user_id, pr_exercise_name)
-        if best:
-            # If multiple PR names normalize to the same key, keep the one with higher e1rm
-            if nk not in pr_lookup or best.estimated_1rm > pr_lookup[nk][0].estimated_1rm:
-                pr_lookup[nk] = (best, pr_exercise_name)
-    
-    # Now match each workout exercise to its best PR
     best_prs = {}
+    seen_pr_names = set()  # Track which PR names have been claimed
+    
     for letter, exercises in workouts.items():
         for ex in exercises:
             workout_name = ex["name"]
             if workout_name in best_prs:
-                continue  # Already matched (e.g. duplicate exercise in same workout)
-            nk = _normalize_exercise_key(workout_name)
-            if nk in pr_lookup:
-                best_prs[workout_name] = _format_pr(pr_lookup[nk][0])
+                continue
+            
+            best, matched_name = _find_best_pr_match(db, user_id, workout_name)
+            if best and matched_name not in seen_pr_names:
+                best_prs[workout_name] = _format_pr(best)
+                seen_pr_names.add(matched_name)
     
     return best_prs
 
@@ -555,17 +633,10 @@ def dashboard_log_exercise(unique_code: str, body: dict, db: Session = Depends(g
 
     estimated_1rm = calculate_1rm(weight, reps)
 
-    # Find matching PR using normalized key (handles name mismatches)
-    nk = _normalize_exercise_key(exercise)
-    all_pr_exercises = db.query(PR.exercise).filter(PR.user_id == member.user_id).distinct().all()
-    matched_pr_name = exercise  # default to the name as given
-    for (pr_name,) in all_pr_exercises:
-        if _normalize_exercise_key(pr_name) == nk:
-            matched_pr_name = pr_name
-            break
+    # Find matching PR using fuzzy match
+    best, matched_pr_name = _find_best_pr_match(db, member.user_id, exercise)
+    store_as = matched_pr_name if matched_pr_name else exercise
 
-    # Get current best before logging
-    best = _get_best_pr_for_exercise(db, member.user_id, matched_pr_name)
     if best:
         is_pr = estimated_1rm > best.estimated_1rm if weight > 0 else reps > best.reps
     else:
@@ -574,7 +645,7 @@ def dashboard_log_exercise(unique_code: str, body: dict, db: Session = Depends(g
     # Save the log as a PR record (use the matched name for consistency)
     new_pr = PR(
         user_id=member.user_id, username=member.username,
-        exercise=matched_pr_name, weight=weight, reps=reps,
+        exercise=store_as, weight=weight, reps=reps,
         estimated_1rm=estimated_1rm,
         message_id=f"dashboard-{datetime.utcnow().isoformat()}",
         channel_id="dashboard", timestamp=datetime.utcnow()
@@ -601,7 +672,7 @@ def dashboard_log_exercise(unique_code: str, body: dict, db: Session = Depends(g
     db.commit()
 
     # Get updated best
-    updated_best = _get_best_pr_for_exercise(db, member.user_id, matched_pr_name)
+    updated_best = _get_best_pr_for_exercise(db, member.user_id, store_as)
     return {
         "is_pr": is_pr,
         "new_best_pr": _format_pr(updated_best),
@@ -751,23 +822,14 @@ def revert_dashboard_swap(unique_code: str, body: dict, db: Session = Depends(ge
 @app.get("/api/dashboard/{unique_code}/pr-history/{exercise}", tags=["Dashboard"])
 def get_dashboard_pr_history(unique_code: str, exercise: str, db: Session = Depends(get_db)):
     member = _resolve_member(unique_code, db)
-    # Try exact match first, then normalized match
+    # Use fuzzy matching to find the right PR exercise name
+    _, matched_name = _find_best_pr_match(db, member.user_id, exercise)
+    lookup_name = matched_name if matched_name else exercise
+    
     prs = db.query(PR).filter(
         PR.user_id == member.user_id,
-        PR.exercise == exercise
+        PR.exercise == lookup_name
     ).order_by(PR.timestamp.asc()).all()
-    
-    if not prs:
-        # Try normalized matching
-        nk = _normalize_exercise_key(exercise)
-        all_pr_exercises = db.query(PR.exercise).filter(PR.user_id == member.user_id).distinct().all()
-        for (pr_name,) in all_pr_exercises:
-            if _normalize_exercise_key(pr_name) == nk:
-                prs = db.query(PR).filter(
-                    PR.user_id == member.user_id,
-                    PR.exercise == pr_name
-                ).order_by(PR.timestamp.asc()).all()
-                break
     
     return [
         {"weight": pr.weight, "reps": pr.reps, "estimated_1rm": pr.estimated_1rm,
@@ -821,7 +883,7 @@ def get_full_dashboard(unique_code: str, db: Session = Depends(get_db)):
             "setup_notes": ex.setup_notes, "video_link": ex.video_link
         })
 
-    # Best PRs - uses normalized matching so workout names find their PRs
+    # Best PRs - uses normalized + fuzzy matching
     best_prs = _build_best_prs_for_workouts(db, uid, workouts)
 
     # Deload status
