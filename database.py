@@ -29,39 +29,33 @@ Base = declarative_base()
 # ============================================================================
 
 class PR(Base):
-    """Exercise PRs - logged from Discord bot or dashboard"""
     __tablename__ = "prs"
-    
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(String, index=True, nullable=False)
     username = Column(String, nullable=False)
     exercise = Column(String, index=True, nullable=False)
     weight = Column(Float, nullable=False)
     reps = Column(Integer, nullable=False)
-    estimated_1rm = Column(Float, nullable=False)  # Calculated: (weight * reps * 0.0333) + weight
+    estimated_1rm = Column(Float, nullable=False)
     timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
-    message_id = Column(String, default="", nullable=False)  # Discord message ID or "dashboard"
-    channel_id = Column(String, default="", nullable=False)  # Discord channel ID or "dashboard"
+    message_id = Column(String, default="", nullable=False)
+    channel_id = Column(String, default="", nullable=False)
 
 
 class Workout(Base):
-    """Workout plans for dashboard users"""
     __tablename__ = "workouts"
-    
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(String, index=True, nullable=False)
-    workout_letter = Column(String, nullable=False)  # A, B, C, D, E
+    workout_letter = Column(String, nullable=False)
     exercise_order = Column(Integer, nullable=False)
     exercise_name = Column(String, nullable=False)
     setup_notes = Column(Text, nullable=True)
     video_link = Column(String, nullable=True)
-    special_logging = Column(String, nullable=True)  # 'weight_only', 'reps_as_seconds', or None
+    special_logging = Column(String, nullable=True)
 
 
 class WorkoutCompletion(Base):
-    """Tracks deload counter for each workout"""
     __tablename__ = "workout_completions"
-    
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(String, index=True, nullable=False)
     workout_letter = Column(String, nullable=False)
@@ -70,12 +64,10 @@ class WorkoutCompletion(Base):
 
 
 class CoreFoodsLog(Base):
-    """Daily core foods check-ins"""
     __tablename__ = "core_foods_log"
-    
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(String, index=True, nullable=False)
-    date = Column(String, nullable=False)  # YYYY-MM-DD format
+    date = Column(String, nullable=False)
     completed = Column(Boolean, default=True, nullable=False)
     timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
 
@@ -85,9 +77,7 @@ class CoreFoodsLog(Base):
 # ============================================================================
 
 class UserXP(Base):
-    """User XP and levels for gamification"""
     __tablename__ = "user_xp"
-    
     user_id = Column(String, primary_key=True, index=True)
     username = Column(String, nullable=False)
     total_xp = Column(Integer, default=0, nullable=False)
@@ -96,9 +86,7 @@ class UserXP(Base):
 
 
 class WeeklyLog(Base):
-    """Weekly training logs submitted by members"""
     __tablename__ = "weekly_logs"
-    
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(String, index=True, nullable=False)
     message_id = Column(String, nullable=False)
@@ -107,36 +95,60 @@ class WeeklyLog(Base):
 
 
 class CoreFoodsCheckin(Base):
-    """Core foods check-ins from Discord (supports simple and learning modes)"""
     __tablename__ = "core_foods_checkins"
-    
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(String, index=True, nullable=False)
     date = Column(String, nullable=False)
     message_id = Column(String, nullable=False)
     timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
     xp_awarded = Column(Integer, nullable=False)
-    
-    # Servings breakdown (optional - for "learning mode" in dashboard)
-    # NULL = simple "core foods yes/no" mode
-    # Values = learning mode with individual servings tracked
-    protein_servings = Column(Integer, nullable=True)  # 0-4
-    veggie_servings = Column(Integer, nullable=True)   # 0-3
+    protein_servings = Column(Integer, nullable=True)
+    veggie_servings = Column(Integer, nullable=True)
 
 
 # ============================================================================
-# DASHBOARD TABLES (Dashboard-specific data)
+# DASHBOARD TABLES
 # ============================================================================
 
 class DashboardMember(Base):
-    """Dashboard members with unique access codes"""
     __tablename__ = "dashboard_members"
-    
     user_id = Column(String, primary_key=True, index=True)
-    username = Column(String, nullable=False)  # First name only (e.g., "Dan")
-    full_name = Column(String, nullable=True)  # Full name (e.g., "Dan Schultz")
+    username = Column(String, nullable=False)
+    full_name = Column(String, nullable=True)
     unique_code = Column(String, unique=True, index=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class UserNote(Base):
+    """Per-exercise user notes from dashboard"""
+    __tablename__ = "user_notes"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, index=True, nullable=False)
+    exercise = Column(String, nullable=False)
+    note = Column(Text, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class ExerciseSwap(Base):
+    """Exercise swaps per user per workout slot"""
+    __tablename__ = "exercise_swaps"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, index=True, nullable=False)
+    workout_letter = Column(String, nullable=False)
+    exercise_index = Column(Integer, nullable=False)  # position in workout
+    original_exercise = Column(String, nullable=False)
+    swapped_exercise = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class WorkoutSession(Base):
+    """96-hour session tracking per workout letter per user"""
+    __tablename__ = "workout_sessions"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, index=True, nullable=False)
+    workout_letter = Column(String, nullable=False)
+    opened_at = Column(DateTime, nullable=False)
+    log_count = Column(Integer, default=0, nullable=False)
 
 
 # ============================================================================
@@ -144,13 +156,11 @@ class DashboardMember(Base):
 # ============================================================================
 
 def init_db():
-    """Create all tables"""
     Base.metadata.create_all(bind=engine)
-    print("✅ Database tables created successfully")
+    print("Database tables created successfully")
 
 
 def get_db():
-    """Dependency for FastAPI routes to get database session"""
     db = SessionLocal()
     try:
         yield db
@@ -159,6 +169,5 @@ def get_db():
 
 
 if __name__ == "__main__":
-    # Test database connection
     print(f"Connecting to: {DATABASE_URL}")
     init_db()
