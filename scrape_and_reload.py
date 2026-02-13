@@ -45,7 +45,6 @@ USER_MAP = {
     "780219213389234196": ("dan_s", "Dan S"),
 }
 
-# Known bot IDs to skip
 BOT_IDS = set()
 
 # =============================================================================
@@ -53,10 +52,6 @@ BOT_IDS = set()
 # =============================================================================
 
 def normalize_exercise_name(exercise: str, weight: Optional[float] = None) -> str:
-    """
-    Normalize an exercise name according to Three Target Method rules.
-    Fixes typos, expands abbreviations, standardizes formatting, removes duplicate words.
-    """
     if exercise.strip().startswith('*'):
         return ""
 
@@ -68,7 +63,7 @@ def normalize_exercise_name(exercise: str, weight: Optional[float] = None) -> st
     exercise = exercise.replace('-', ' ')
     exercise = re.sub(r'\s+', ' ', exercise).strip()
 
-    # 2. TYPO CORRECTIONS (using word boundaries)
+    # 2. TYPO CORRECTIONS
     typo_map = [
         (r'\bweighte\b', 'weighted'),
         (r'\bex bar\b', 'ez bar'),
@@ -78,6 +73,8 @@ def normalize_exercise_name(exercise: str, weight: Optional[float] = None) -> st
         (r'\bmillitary\b', 'military'),
         (r'\bromainian\b', 'romanian'),
         (r'\bromaninan\b', 'romanian'),
+        (r'\bstragiht\b', 'straight'),
+        (r'\bskullcrushers?\b', 'tricep extension'),
     ]
     for pattern, correction in typo_map:
         exercise = re.sub(pattern, correction, exercise)
@@ -94,7 +91,9 @@ def normalize_exercise_name(exercise: str, weight: Optional[float] = None) -> st
     exercise = re.sub(r'\bsl\b', 'single leg', exercise)
     exercise = re.sub(r'\bsa\b', 'single arm', exercise)
     exercise = re.sub(r'\bcs\b', 'chest supported', exercise)
+    exercise = re.sub(r'\bhs\b', 'head supported', exercise)
     exercise = re.sub(r'\bdm\b', 'dumbbell', exercise)
+    exercise = re.sub(r'\b1 arm\b', 'single arm', exercise)
     if 'ez' in exercise and 'ez bar' not in exercise:
         exercise = re.sub(r'\bez\b', 'ez bar', exercise)
 
@@ -164,21 +163,40 @@ def normalize_exercise_name(exercise: str, weight: Optional[float] = None) -> st
         (r'\bsitups\b', 'situp'),
         (r'\bdeadlifts\b', 'deadlift'),
         (r'\bthrusts\b', 'thrust'),
+        (r'\brollouts\b', 'rollout'),
+        (r'\bbridges\b', 'bridge'),
+        (r'\bangels\b', 'angel'),
+        (r'\blandmines\b', 'landmine'),
+        (r'\bhypers\b', 'hyper'),
+        (r'\bdeadbugs\b', 'deadbug'),
     ]
     for pattern, replacement in plural_map:
         exercise = re.sub(pattern, replacement, exercise)
 
     # 8. POSITION & MODIFIER STANDARDIZATION
     exercise = re.sub(r'\bpause rep\b', 'paused', exercise)
+    exercise = re.sub(r'\bunderhand grip\b', 'underhand', exercise)
+    exercise = re.sub(r'\boverhand grip\b', 'overhand', exercise)
+    exercise = re.sub(r'\bbody weight\b', 'bodyweight', exercise)
+    exercise = re.sub(r'\bland mine\b', 'landmine', exercise)
+    exercise = re.sub(r'\bglut\b', 'glute', exercise)
+    if exercise.endswith(' bench') and 'press' not in exercise:
+        exercise = exercise + ' press'
+    # Word order: "dumbbell seated X" -> "seated dumbbell X"
+    exercise = re.sub(r'\bdumbbell (seated|standing|incline|flat|decline)\b', r'\1 dumbbell', exercise)
+    # "trx bicep tricep extension" -> "trx tricep extension"
+    exercise = re.sub(r'\btrx bicep tricep\b', 'trx tricep', exercise)
+    # Strip trailing descriptors
+    exercise = re.sub(r'\s+\d+\s*second.*$', '', exercise)
+    exercise = re.sub(r'\s+(each|per)\s+side$', '', exercise)
+    exercise = re.sub(r'\s+x\d+$', '', exercise)
 
     # 9. EXERCISE-SPECIFIC RULES
 
-    # Lateral raises
     if 'lateral' in exercise and 'raise' not in exercise:
         exercise = re.sub(r'\blateral(s)?\b', 'lateral raise', exercise)
     exercise = re.sub(r'\blat raise(s)?\b', 'lateral raise', exercise)
 
-    # Extensions - add "tricep" if appropriate
     if 'extension' in exercise and 'tricep' not in exercise:
         if not re.search(r'\b(leg|back|hip|hyper|reverse)\b', exercise):
             exercise = re.sub(r'\bextension(s)?\b', 'tricep extension', exercise)
@@ -262,6 +280,7 @@ def normalize_exercise_name(exercise: str, weight: Optional[float] = None) -> st
         exercise = 'standing calf raise'
 
     exercise = re.sub(r'\bab wheel rollout\b', 'ab rollout', exercise)
+    exercise = re.sub(r'\bab wheel rotation\b', 'ab rollout', exercise)
     if re.match(r'^ab wheel$', exercise):
         exercise = 'ab rollout'
     if re.match(r'^rollout$', exercise):
@@ -290,7 +309,7 @@ def normalize_exercise_name(exercise: str, weight: Optional[float] = None) -> st
 
     exercise = re.sub(r'\b\d+ \d+ \d+\b', '', exercise)
 
-    # 10. INCLINE ANGLE NORMALIZATION (presses only)
+    # 10. INCLINE ANGLE NORMALIZATION
     if 'press' in exercise:
         exercise = re.sub(r'\b(30 degree|low) incline\b', 'low incline', exercise)
         exercise = re.sub(r'\b(60 degree|high|steep) incline\b', 'high incline', exercise)
@@ -314,19 +333,6 @@ def normalize_exercise_name(exercise: str, weight: Optional[float] = None) -> st
 # =============================================================================
 
 def parse_weight_reps(text: str) -> List[Tuple[str, float, int]]:
-    """
-    Parse exercise name + weight/reps from a line of text.
-
-    Supports formats:
-      - "DB front raises 35/20"
-      - "chinups bw/14"
-      - "pulldowns 90/22"
-      - "High Incline Dumbbell Press - 45 lbs x 14 (tied previous PR)"
-      - "Seated Lateral Raises - 20 lbs x 15 (PR)"
-      - "Weighted side planks 35/50"
-
-    Returns list of (exercise_name, weight, reps) tuples.
-    """
     results = []
 
     line = text.strip()
@@ -344,10 +350,20 @@ def parse_weight_reps(text: str) -> List[Tuple[str, float, int]]:
         r'^(needed|grinding|another|holy|you)',
         r'^(i |i\'m|i\'ve|i\'ll|the |it |err )',
         r'^(s&p |what\'s|from the)',
+        r'^(off to|just go|say |make it|wtf )',
+        r'^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d',
+        r'^\d+\s*set\s',
+        r'^"',
+        r'^@',
+        r'^(shoulders?\s*&|back\s*&|legs?\s*&|chest\s*&|arms?\s*&)',
     ]
     for pattern in skip_patterns:
         if re.match(pattern, line, re.IGNORECASE):
             return results
+
+    # Skip lines too long to be a PR
+    if len(line) > 120:
+        return results
 
     # Pattern 1: "Exercise Name - Weight lbs x Reps (optional notes)"
     match_dash = re.match(
@@ -396,10 +412,6 @@ def parse_weight_reps(text: str) -> List[Tuple[str, float, int]]:
 
 
 def parse_message(content: str) -> List[Tuple[str, float, int]]:
-    """
-    Parse a full Discord message that may contain multiple PRs.
-    Handles multi-line messages where first line might be a workout title.
-    """
     all_prs = []
     lines = content.split('\n')
 
@@ -418,7 +430,6 @@ def parse_message(content: str) -> List[Tuple[str, float, int]]:
 # =============================================================================
 
 def discord_get(endpoint: str, params: dict = None) -> dict:
-    """Make a GET request to the Discord API."""
     headers = {
         "Authorization": f"Bot {DISCORD_BOT_TOKEN}",
         "Content-Type": "application/json"
@@ -437,7 +448,6 @@ def discord_get(endpoint: str, params: dict = None) -> dict:
 
 
 def fetch_all_messages(channel_id: str) -> List[dict]:
-    """Fetch all messages from a Discord channel, oldest first."""
     all_messages = []
     before = None
     batch_num = 0
@@ -472,7 +482,6 @@ def fetch_all_messages(channel_id: str) -> List[dict]:
 # =============================================================================
 
 def get_existing_message_ids() -> set:
-    """Get all message_ids currently in the database."""
     resp = requests.get(f"{API_BASE_URL}/api/prs?limit=10000")
     if resp.status_code == 200:
         prs = resp.json()
@@ -481,7 +490,6 @@ def get_existing_message_ids() -> set:
 
 
 def get_current_pr_count() -> int:
-    """Get current PR count from database."""
     resp = requests.get(f"{API_BASE_URL}/api/prs/count")
     if resp.status_code == 200:
         data = resp.json()
@@ -491,7 +499,6 @@ def get_current_pr_count() -> int:
 
 def post_pr(user_id: str, username: str, exercise: str, weight: float,
             reps: int, message_id: str, channel_id: str) -> dict:
-    """POST a PR to the API."""
     payload = {
         "user_id": user_id,
         "username": username,
@@ -510,7 +517,6 @@ def post_pr(user_id: str, username: str, exercise: str, weight: float,
 
 
 def wipe_all_prs():
-    """Delete ALL PRs from the database. Use with caution."""
     resp = requests.get(f"{API_BASE_URL}/api/prs?limit=10000")
     if resp.status_code != 200:
         print(f"ERROR: Could not fetch PRs: {resp.status_code}")
