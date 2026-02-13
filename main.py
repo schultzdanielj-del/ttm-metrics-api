@@ -547,6 +547,185 @@ def get_dashboard_member(unique_code: str, db: Session = Depends(get_db)):
 
 
 # ============================================================================
+# Dashboard Data Endpoints (unique_code based - used by frontend)
+# ============================================================================
+
+@app.get("/api/dashboard/{unique_code}/workouts", tags=["Dashboard"])
+def get_dashboard_workouts(unique_code: str, db: Session = Depends(get_db)):
+    """Get workouts for dashboard by unique code"""
+    member = db.query(DashboardMember).filter(
+        DashboardMember.unique_code == unique_code
+    ).first()
+    
+    if not member:
+        raise HTTPException(status_code=404, detail="Not Found")
+    
+    exercises = db.query(Workout).filter(
+        Workout.user_id == member.user_id
+    ).order_by(Workout.workout_letter, Workout.exercise_order).all()
+    
+    workouts = {}
+    for ex in exercises:
+        if ex.workout_letter not in workouts:
+            workouts[ex.workout_letter] = []
+        workouts[ex.workout_letter].append({
+            "name": ex.exercise_name,
+            "special_logging": ex.special_logging,
+            "setup_notes": ex.setup_notes,
+            "video_link": ex.video_link
+        })
+    
+    return {
+        "user_id": member.user_id,
+        "username": member.username,
+        "workouts": workouts
+    }
+
+
+@app.get("/api/dashboard/{unique_code}/best-prs", tags=["Dashboard"])
+def get_dashboard_best_prs(unique_code: str, db: Session = Depends(get_db)):
+    """Get best PRs formatted as weight/reps for dashboard display"""
+    member = db.query(DashboardMember).filter(
+        DashboardMember.unique_code == unique_code
+    ).first()
+    
+    if not member:
+        raise HTTPException(status_code=404, detail="Not Found")
+    
+    exercise_names = db.query(PR.exercise).filter(
+        PR.user_id == member.user_id
+    ).distinct().all()
+    
+    result = {}
+    for (exercise_name,) in exercise_names:
+        best = db.query(PR).filter(
+            PR.user_id == member.user_id,
+            PR.exercise == exercise_name
+        ).order_by(PR.estimated_1rm.desc()).first()
+        
+        if best:
+            if best.weight == 0:
+                result[exercise_name] = f"BW/{best.reps}"
+            else:
+                weight_str = str(int(best.weight)) if best.weight == int(best.weight) else str(best.weight)
+                result[exercise_name] = f"{weight_str}/{best.reps}"
+    
+    return result
+
+
+@app.get("/api/dashboard/{unique_code}/deload-status", tags=["Dashboard"])
+def get_dashboard_deload_status(unique_code: str, db: Session = Depends(get_db)):
+    """Get deload completion counts by workout letter"""
+    member = db.query(DashboardMember).filter(
+        DashboardMember.unique_code == unique_code
+    ).first()
+    
+    if not member:
+        raise HTTPException(status_code=404, detail="Not Found")
+    
+    completions = db.query(WorkoutCompletion).filter(
+        WorkoutCompletion.user_id == member.user_id
+    ).all()
+    
+    return {c.workout_letter: c.completion_count for c in completions}
+
+
+@app.post("/api/dashboard/{unique_code}/log-workout", tags=["Dashboard"])
+def dashboard_log_workout(unique_code: str, workout_data: dict, db: Session = Depends(get_db)):
+    """Log a workout from the dashboard UI"""
+    member = db.query(DashboardMember).filter(
+        DashboardMember.unique_code == unique_code
+    ).first()
+    
+    if not member:
+        raise HTTPException(status_code=404, detail="Not Found")
+    
+    workout_letter = workout_data.get("workout_letter")
+    exercises = workout_data.get("exercises", [])
+    core_foods = workout_data.get("core_foods", False)
+    
+    for ex in exercises:
+        if ex.get("weight", 0) > 0 or ex.get("reps", 0) > 0:
+            estimated_1rm = calculate_1rm(ex.get("weight", 0), ex.get("reps", 0))
+            
+            new_pr = PR(
+                user_id=member.user_id,
+                username=member.username,
+                exercise=ex["name"],
+                weight=ex.get("weight", 0),
+                reps=ex.get("reps", 0),
+                estimated_1rm=estimated_1rm,
+                message_id=f"dashboard-{datetime.utcnow().isoformat()}",
+                channel_id="dashboard",
+                timestamp=datetime.utcnow()
+            )
+            db.add(new_pr)
+    
+    record = db.query(WorkoutCompletion).filter(
+        WorkoutCompletion.user_id == member.user_id,
+        WorkoutCompletion.workout_letter == workout_letter
+    ).first()
+    
+    if not record:
+        record = WorkoutCompletion(
+            user_id=member.user_id,
+            workout_letter=workout_letter,
+            completion_count=0
+        )
+        db.add(record)
+    
+    record.completion_count += 1
+    record.last_workout_date = datetime.utcnow()
+    
+    if core_foods:
+        today = datetime.utcnow().date().isoformat()
+        existing_checkin = db.query(CoreFoodsCheckin).filter(
+            and_(
+                CoreFoodsCheckin.user_id == member.user_id,
+                CoreFoodsCheckin.date == today
+            )
+        ).first()
+        
+        if not existing_checkin:
+            checkin = CoreFoodsCheckin(
+                user_id=member.user_id,
+                date=today,
+                message_id=f"dashboard-{datetime.utcnow().isoformat()}",
+                timestamp=datetime.utcnow(),
+                xp_awarded=0
+            )
+            db.add(checkin)
+    
+    db.commit()
+    
+    return {
+        "success": True,
+        "new_completion_count": record.completion_count,
+        "exercises_logged": len(exercises)
+    }
+
+
+@app.get("/api/dashboard/{unique_code}/core-foods", tags=["Dashboard"])
+def get_dashboard_core_foods(unique_code: str, db: Session = Depends(get_db)):
+    """Get core foods check-ins for last 7 days"""
+    member = db.query(DashboardMember).filter(
+        DashboardMember.unique_code == unique_code
+    ).first()
+    
+    if not member:
+        raise HTTPException(status_code=404, detail="Not Found")
+    
+    seven_days_ago = (datetime.utcnow() - timedelta(days=7)).date().isoformat()
+    
+    checkins = db.query(CoreFoodsCheckin).filter(
+        CoreFoodsCheckin.user_id == member.user_id,
+        CoreFoodsCheckin.date >= seven_days_ago
+    ).all()
+    
+    return {c.date: True for c in checkins}
+
+
+# ============================================================================
 # Weekly Logs Endpoints
 # ============================================================================
 
