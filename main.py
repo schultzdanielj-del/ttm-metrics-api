@@ -28,7 +28,7 @@ from config import XP_REWARDS_API, XP_ENABLED
 app = FastAPI(
     title="TTM Metrics API",
     description="Three Target Method - Fitness tracking and gamification API",
-    version="1.1.0"
+    version="1.2.0"
 )
 
 app.add_middleware(
@@ -47,7 +47,7 @@ def startup_event():
 
 @app.get("/")
 def root():
-    return {"status": "healthy", "service": "TTM Metrics API", "version": "1.1.0"}
+    return {"status": "healthy", "service": "TTM Metrics API", "version": "1.2.0"}
 
 
 # ============================================================================
@@ -341,12 +341,42 @@ def create_dashboard_member(member: DashboardMemberCreate, db: Session = Depends
     )
 
 
+@app.patch("/api/dashboard/members/{unique_code}", tags=["Dashboard"])
+def update_dashboard_member(unique_code: str, body: dict, db: Session = Depends(get_db)):
+    """Update a member's username and/or full_name."""
+    member = _resolve_member(unique_code, db)
+    if "username" in body:
+        member.username = body["username"]
+    if "full_name" in body:
+        member.full_name = body["full_name"]
+    db.commit()
+    db.refresh(member)
+    return {
+        "user_id": member.user_id, "username": member.username,
+        "full_name": member.full_name, "unique_code": member.unique_code
+    }
+
+
 @app.get("/api/dashboard/members/{unique_code}", tags=["Dashboard"])
 def get_dashboard_member(unique_code: str, db: Session = Depends(get_db)):
     member = db.query(DashboardMember).filter(DashboardMember.unique_code == unique_code).first()
     if not member:
         raise HTTPException(status_code=404, detail="Invalid dashboard code")
     return member
+
+
+@app.get("/api/dashboard/members", tags=["Dashboard"])
+def list_all_members(db: Session = Depends(get_db)):
+    """Admin endpoint: list all members with full_name for disambiguation."""
+    members = db.query(DashboardMember).order_by(DashboardMember.created_at).all()
+    return [
+        {
+            "user_id": m.user_id, "username": m.username, "full_name": m.full_name,
+            "unique_code": m.unique_code,
+            "dashboard_url": f"https://dashboard-production-79f2.up.railway.app/{m.unique_code}"
+        }
+        for m in members
+    ]
 
 
 # ============================================================================
@@ -394,7 +424,6 @@ def get_dashboard_deload_status(unique_code: str, db: Session = Depends(get_db))
 @app.get("/api/dashboard/{unique_code}/core-foods", tags=["Dashboard"])
 def get_dashboard_core_foods(unique_code: str, db: Session = Depends(get_db)):
     member = _resolve_member(unique_code, db)
-    # Return ALL check-ins (streak calculation needs full history)
     checkins = db.query(CoreFoodsCheckin).filter(
         CoreFoodsCheckin.user_id == member.user_id
     ).all()
