@@ -32,7 +32,7 @@ from admin_dump import router as admin_dump_router
 app = FastAPI(
     title="TTM Metrics API",
     description="Three Target Method - Fitness tracking and gamification API",
-    version="1.5.4"
+    version="1.5.5"
 )
 
 app.add_middleware(
@@ -53,7 +53,7 @@ def startup_event():
 
 @app.get("/")
 def root():
-    return {"status": "healthy", "service": "TTM Metrics API", "version": "1.5.4"}
+    return {"status": "healthy", "service": "TTM Metrics API", "version": "1.5.5"}
 
 
 # ============================================================================
@@ -1085,6 +1085,30 @@ def admin_config(key: str = ""):
         "bot_token": os.environ.get("TTM_BOT_TOKEN", ""),
         "admin_key": ADMIN_KEY,
     }
+
+
+@app.get("/api/admin/sql", tags=["Admin"])
+def admin_sql(key: str = "", q: str = "", db: Session = Depends(get_db)):
+    """
+    Run a read-only SQL query against the database.
+    Secured by admin key. Only SELECT statements allowed.
+    """
+    ADMIN_KEY = os.environ.get("ADMIN_KEY", "4ifQC_DLzlXM1c5PC6egwvf2p5GgbMR3")
+    if key != ADMIN_KEY:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    if not q.strip():
+        raise HTTPException(status_code=400, detail="Query required")
+    normalized = q.strip().lower()
+    if not normalized.startswith("select"):
+        raise HTTPException(status_code=400, detail="Only SELECT queries allowed")
+    from sqlalchemy import text
+    try:
+        result = db.execute(text(q))
+        columns = list(result.keys())
+        rows = [dict(zip(columns, row)) for row in result.fetchall()]
+        return {"columns": columns, "rows": rows, "count": len(rows)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ============================================================================
