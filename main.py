@@ -31,7 +31,7 @@ from config import XP_REWARDS_API, XP_ENABLED
 app = FastAPI(
     title="TTM Metrics API",
     description="Three Target Method - Fitness tracking and gamification API",
-    version="1.5.0"
+    version="1.5.1"
 )
 
 app.add_middleware(
@@ -50,20 +50,18 @@ def startup_event():
 
 @app.get("/")
 def root():
-    return {"status": "healthy", "service": "TTM Metrics API", "version": "1.5.0"}
+    return {"status": "healthy", "service": "TTM Metrics API", "version": "1.5.1"}
 
 
 # ============================================================================
 # Exercise Name Matching
 # ============================================================================
 
-# Words that are noise/filler and should be stripped before matching
 _STRIP_WORDS = {
     'grip', 'machine', 'cable', 'loaded', 'the', 'a', 'an', 'with', 'on',
     'non', 'alternating', 'style',
 }
 
-# Abbreviation expansions
 _EXPANSIONS = {
     'db': 'dumbbell',
     'rdf': 'rear delt fly',
@@ -76,15 +74,9 @@ _EXPANSIONS = {
 
 
 def _normalize_exercise_key(name: str) -> str:
-    """
-    Normalize an exercise name to a canonical key for matching.
-    Expands abbreviations, strips noise words, singularizes, lowercases, sorts tokens.
-    """
     k = name.lower().strip()
     k = re.sub(r'[^a-z0-9\s]', ' ', k)
     k = re.sub(r'\s+', ' ', k)
-    
-    # Expand abbreviations
     tokens = k.split()
     expanded = []
     for t in tokens:
@@ -92,8 +84,6 @@ def _normalize_exercise_key(name: str) -> str:
             expanded.extend(_EXPANSIONS[t].split())
         else:
             expanded.append(t)
-    
-    # Singularize common exercise suffixes
     singularized = []
     for t in expanded:
         for plural, singular in [
@@ -110,69 +100,40 @@ def _normalize_exercise_key(name: str) -> str:
                 t = singular
                 break
         singularized.append(t)
-    
-    # Strip noise words
     cleaned = [t for t in singularized if t not in _STRIP_WORDS and len(t) > 0]
-    
-    # Sort for order-independent matching
     return ' '.join(sorted(cleaned))
 
 
 def _exercise_similarity(name_a: str, name_b: str) -> float:
-    """
-    Score how similar two exercise names are (0.0 - 1.0).
-    Uses normalized token overlap with Jaccard-like scoring.
-    """
     nk_a = _normalize_exercise_key(name_a)
     nk_b = _normalize_exercise_key(name_b)
-    
-    # Exact normalized match
     if nk_a == nk_b:
         return 1.0
-    
     tokens_a = set(nk_a.split())
     tokens_b = set(nk_b.split())
-    
     if not tokens_a or not tokens_b:
         return 0.0
-    
     overlap = tokens_a & tokens_b
-    # Use the smaller set as denominator (so "Seated DB Curls" matching
-    # "seated underhand dumbbell curl" scores on how much of the shorter
-    # name is covered)
     min_len = min(len(tokens_a), len(tokens_b))
-    
     return len(overlap) / min_len if min_len > 0 else 0.0
 
 
 def _find_all_matching_names(db: Session, user_id: str, exercise_name: str) -> List[str]:
-    """
-    Find ALL PR exercise name variants in the database that match a given exercise name.
-    Uses normalized key matching first, then fuzzy similarity >= 0.7.
-    Returns a list of all matching DB exercise names (may include the input name itself).
-    """
     all_pr_exercises = db.query(PR.exercise).filter(PR.user_id == user_id).distinct().all()
     pr_names = [name for (name,) in all_pr_exercises]
-    
     if not pr_names:
         return []
-    
     target_nk = _normalize_exercise_key(exercise_name)
     matched = set()
-    
     for pr_name in pr_names:
-        # Exact string match
         if pr_name == exercise_name:
             matched.add(pr_name)
             continue
-        # Normalized key match
         if _normalize_exercise_key(pr_name) == target_nk:
             matched.add(pr_name)
             continue
-        # Fuzzy similarity match
         if _exercise_similarity(exercise_name, pr_name) >= 0.7:
             matched.add(pr_name)
-    
     return list(matched)
 
 
@@ -203,7 +164,6 @@ def _get_best_pr_for_exercise(db: Session, user_id: str, exercise: str):
 
 
 def _get_best_pr_across_names(db: Session, user_id: str, names: List[str]):
-    """Get the single best PR record across multiple exercise name variants."""
     if not names:
         return None
     return db.query(PR).filter(
@@ -222,45 +182,27 @@ def _format_pr(pr) -> str:
 
 
 def _find_best_pr_match(db: Session, user_id: str, workout_exercise_name: str):
-    """
-    Find the best PR for a workout exercise, using fuzzy matching across ALL name variants.
-    Returns (best_pr_record, canonical_pr_exercise_name) or (None, None).
-    
-    The canonical name returned is the exercise name of the best PR record found.
-    """
-    # Find all matching name variants
     matching_names = _find_all_matching_names(db, user_id, workout_exercise_name)
-    
     if not matching_names:
         return None, None
-    
-    # Get the best PR across all variants
     best = _get_best_pr_across_names(db, user_id, matching_names)
     if best:
         return best, best.exercise
-    
     return None, None
 
 
 def _build_best_prs_for_workouts(db: Session, user_id: str, workouts: dict) -> dict:
-    """
-    Build best_prs dict keyed by workout exercise name (as the frontend expects).
-    Uses normalized keys + fuzzy matching to find best PR across ALL name variants.
-    """
     best_prs = {}
-    
     for letter, exercises in workouts.items():
         for ex in exercises:
             workout_name = ex["name"]
             if workout_name in best_prs:
                 continue
-            
             matching_names = _find_all_matching_names(db, user_id, workout_name)
             if matching_names:
                 best = _get_best_pr_across_names(db, user_id, matching_names)
                 if best:
                     best_prs[workout_name] = _format_pr(best)
-    
     return best_prs
 
 
@@ -522,7 +464,6 @@ def create_dashboard_member(member: DashboardMemberCreate, db: Session = Depends
 
 @app.patch("/api/dashboard/members/{unique_code}", tags=["Dashboard"])
 def update_dashboard_member(unique_code: str, body: dict, db: Session = Depends(get_db)):
-    """Update a member's username and/or full_name."""
     member = _resolve_member(unique_code, db)
     if "username" in body:
         member.username = body["username"]
@@ -546,7 +487,6 @@ def get_dashboard_member(unique_code: str, db: Session = Depends(get_db)):
 
 @app.get("/api/dashboard/members", tags=["Dashboard"])
 def list_all_members(db: Session = Depends(get_db)):
-    """Admin endpoint: list all members with full_name for disambiguation."""
     members = db.query(DashboardMember).order_by(DashboardMember.created_at).all()
     return [
         {
@@ -611,7 +551,6 @@ def get_dashboard_core_foods(unique_code: str, db: Session = Depends(get_db)):
 
 @app.post("/api/dashboard/{unique_code}/core-foods/toggle", tags=["Dashboard"])
 def toggle_dashboard_core_foods(unique_code: str, body: dict, db: Session = Depends(get_db)):
-    """Toggle a core foods check-in for a date. If exists, delete. If not, create."""
     member = _resolve_member(unique_code, db)
     date = body.get("date")
     if not date:
@@ -635,11 +574,6 @@ def toggle_dashboard_core_foods(unique_code: str, body: dict, db: Session = Depe
 
 @app.post("/api/dashboard/{unique_code}/log", tags=["Dashboard"])
 def dashboard_log_exercise(unique_code: str, body: dict, db: Session = Depends(get_db)):
-    """
-    Log a single exercise from the dashboard.
-    Body: { exercise, weight, reps, workout_letter }
-    Returns: { is_pr, new_best_pr, estimated_1rm }
-    """
     member = _resolve_member(unique_code, db)
     exercise = body.get("exercise", "")
     weight = float(body.get("weight", 0))
@@ -647,20 +581,14 @@ def dashboard_log_exercise(unique_code: str, body: dict, db: Session = Depends(g
     workout_letter = body.get("workout_letter", "")
     if not exercise or reps <= 0:
         raise HTTPException(status_code=400, detail="exercise and reps required")
-
     estimated_1rm = calculate_1rm(weight, reps)
-
-    # Find all matching PR names and best PR across them
     matching_names = _find_all_matching_names(db, member.user_id, exercise)
     best = _get_best_pr_across_names(db, member.user_id, matching_names) if matching_names else None
     store_as = best.exercise if best else exercise
-
     if best:
         is_pr = estimated_1rm > best.estimated_1rm if weight > 0 else reps > best.reps
     else:
         is_pr = True
-
-    # Save the log as a PR record (use the matched name for consistency)
     new_pr = PR(
         user_id=member.user_id, username=member.username,
         exercise=store_as, weight=weight, reps=reps,
@@ -669,8 +597,6 @@ def dashboard_log_exercise(unique_code: str, body: dict, db: Session = Depends(g
         channel_id="dashboard", timestamp=datetime.utcnow()
     )
     db.add(new_pr)
-
-    # Update session tracking
     now = datetime.utcnow()
     session = db.query(WorkoutSession).filter(
         WorkoutSession.user_id == member.user_id,
@@ -686,10 +612,7 @@ def dashboard_log_exercise(unique_code: str, body: dict, db: Session = Depends(g
             opened_at=now, log_count=1
         )
         db.add(session)
-
     db.commit()
-
-    # Get updated best across all variants
     all_names = _find_all_matching_names(db, member.user_id, store_as)
     updated_best = _get_best_pr_across_names(db, member.user_id, all_names) if all_names else None
     return {
@@ -701,7 +624,6 @@ def dashboard_log_exercise(unique_code: str, body: dict, db: Session = Depends(g
 
 @app.post("/api/dashboard/{unique_code}/log-workout", tags=["Dashboard"])
 def dashboard_log_workout(unique_code: str, workout_data: dict, db: Session = Depends(get_db)):
-    """Legacy batch log endpoint"""
     member = _resolve_member(unique_code, db)
     workout_letter = workout_data.get("workout_letter")
     exercises = workout_data.get("exercises", [])
@@ -840,25 +762,14 @@ def revert_dashboard_swap(unique_code: str, body: dict, db: Session = Depends(ge
 
 @app.get("/api/dashboard/{unique_code}/pr-history/{exercise}", tags=["Dashboard"])
 def get_dashboard_pr_history(unique_code: str, exercise: str, db: Session = Depends(get_db)):
-    """
-    Get PR history for an exercise, aggregating across all name variants.
-    Uses normalized + fuzzy matching so "Chest Supported DB Rows" finds records
-    stored as "chest supported dumbbell row", "chest supported db rows", etc.
-    """
     member = _resolve_member(unique_code, db)
-    
-    # Find ALL matching name variants
     matching_names = _find_all_matching_names(db, member.user_id, exercise)
-    
     if not matching_names:
         return []
-    
-    # Query across all matching names
     prs = db.query(PR).filter(
         PR.user_id == member.user_id,
         PR.exercise.in_(matching_names)
     ).order_by(PR.timestamp.asc()).all()
-    
     return [
         {"weight": pr.weight, "reps": pr.reps, "estimated_1rm": pr.estimated_1rm,
          "timestamp": pr.timestamp.isoformat()}
@@ -894,11 +805,8 @@ def get_dashboard_sessions(unique_code: str, db: Session = Depends(get_db)):
 
 @app.get("/api/dashboard/{unique_code}/full", tags=["Dashboard"])
 def get_full_dashboard(unique_code: str, db: Session = Depends(get_db)):
-    """Single endpoint that returns everything the dashboard needs on mount."""
     member = _resolve_member(unique_code, db)
     uid = member.user_id
-
-    # Workouts
     exercises = db.query(Workout).filter(
         Workout.user_id == uid
     ).order_by(Workout.workout_letter, Workout.exercise_order).all()
@@ -910,34 +818,22 @@ def get_full_dashboard(unique_code: str, db: Session = Depends(get_db)):
             "name": ex.exercise_name, "special_logging": ex.special_logging,
             "setup_notes": ex.setup_notes, "video_link": ex.video_link
         })
-
-    # Best PRs - uses normalized + fuzzy matching across ALL name variants
     best_prs = _build_best_prs_for_workouts(db, uid, workouts)
-
-    # Deload status
     completions = db.query(WorkoutCompletion).filter(WorkoutCompletion.user_id == uid).all()
     deload = {c.workout_letter: c.completion_count for c in completions}
     last_workout_dates = {}
     for c in completions:
         if c.last_workout_date:
             last_workout_dates[c.workout_letter] = c.last_workout_date.isoformat()
-
-    # Core foods (all history for streak)
     checkins = db.query(CoreFoodsCheckin).filter(CoreFoodsCheckin.user_id == uid).all()
     core_foods = {c.date: True for c in checkins}
-
-    # Notes
     notes_rows = db.query(UserNote).filter(UserNote.user_id == uid).all()
     notes = {n.exercise: n.note for n in notes_rows}
-
-    # Swaps
     swap_rows = db.query(ExerciseSwap).filter(ExerciseSwap.user_id == uid).all()
     swaps = {}
     for s in swap_rows:
         key = f"{s.workout_letter}:{s.exercise_index}"
         swaps[key] = {"original": s.original_exercise, "swapped": s.swapped_exercise}
-
-    # Sessions (active only)
     now = datetime.utcnow()
     session_rows = db.query(WorkoutSession).filter(WorkoutSession.user_id == uid).all()
     sessions = {}
@@ -947,7 +843,6 @@ def get_full_dashboard(unique_code: str, db: Session = Depends(get_db)):
                 "opened_at": s.opened_at.isoformat(),
                 "log_count": s.log_count
             }
-
     return {
         "username": member.username,
         "workouts": workouts,
@@ -1040,19 +935,14 @@ def can_checkin_core_foods(user_id: str, db: Session = Depends(get_db)):
 
 @app.get("/api/debug/{unique_code}/exercise-names", tags=["Debug"])
 def debug_exercise_names(unique_code: str, db: Session = Depends(get_db)):
-    """Show all PR exercise names and their normalized keys for debugging name matching."""
     member = _resolve_member(unique_code, db)
     all_pr_exercises = db.query(PR.exercise).filter(PR.user_id == member.user_id).distinct().all()
-    
-    # Group by normalized key
     groups = {}
     for (name,) in all_pr_exercises:
         nk = _normalize_exercise_key(name)
         if nk not in groups:
             groups[nk] = []
         groups[nk].append(name)
-    
-    # Also show workout plan names and what they match to
     exercises = db.query(Workout).filter(Workout.user_id == member.user_id).all()
     workout_matches = {}
     for ex in exercises:
@@ -1061,7 +951,6 @@ def debug_exercise_names(unique_code: str, db: Session = Depends(get_db)):
             "normalized_key": _normalize_exercise_key(ex.exercise_name),
             "matched_pr_names": matching
         }
-    
     return {
         "pr_name_groups": groups,
         "workout_plan_matches": workout_matches
@@ -1074,10 +963,17 @@ def debug_exercise_names(unique_code: str, db: Session = Depends(get_db)):
 
 ADMIN_KEY = os.getenv("ADMIN_KEY", "4ifQC_DLzlXM1c5PC6egwvf2p5GgbMR3")
 
+# User IDs whose PRs were manually entered (not from Discord) and must be preserved
+MANUAL_ENTRY_USER_IDS = {
+    "919580721922859008",   # Feras
+    "ND_sonny_a1b2c3d4e5f6",  # Sonny
+}
+
 @app.get("/api/admin/rescrape", tags=["Admin"])
 def admin_rescrape(key: str = "", db: Session = Depends(get_db)):
     """
-    Wipe all PRs and re-scrape from Discord PR channel with full normalization.
+    Wipe Discord-sourced PRs and re-scrape from Discord PR channel with full normalization.
+    Preserves manually-entered PRs for Feras and Sonny.
     Requires admin key as query parameter.
     Usage: GET /api/admin/rescrape?key=<ADMIN_KEY>
     """
@@ -1100,12 +996,17 @@ def admin_rescrape(key: str = "", db: Session = Depends(get_db)):
     # Step 1: Count existing PRs
     from sqlalchemy import func
     old_count = db.query(func.count(PR.id)).scalar()
-    results["steps"].append(f"Existing PRs before wipe: {old_count}")
+    preserved_count = db.query(func.count(PR.id)).filter(
+        PR.user_id.in_(MANUAL_ENTRY_USER_IDS)
+    ).scalar()
+    results["steps"].append(f"Existing PRs before wipe: {old_count} (preserving {preserved_count} manual-entry PRs)")
 
-    # Step 2: Wipe all PRs
-    db.query(PR).delete()
+    # Step 2: Wipe only non-manual PRs (preserve Feras + Sonny)
+    wiped = db.query(PR).filter(
+        ~PR.user_id.in_(MANUAL_ENTRY_USER_IDS)
+    ).delete(synchronize_session='fetch')
     db.commit()
-    results["steps"].append("Wiped all PRs from database")
+    results["steps"].append(f"Wiped {wiped} Discord-sourced PRs (preserved {preserved_count} manual PRs)")
 
     # Step 3: Fetch all messages from Discord PR channel
     headers = {
@@ -1183,7 +1084,7 @@ def admin_rescrape(key: str = "", db: Session = Depends(get_db)):
 
     results["steps"].append(f"Parsed {len(parsed_prs)} PRs from messages")
 
-    # Step 5: Insert all PRs directly
+    # Step 5: Insert all scraped PRs
     inserted = 0
     for pr_data in parsed_prs:
         db.add(PR(
@@ -1200,24 +1101,24 @@ def admin_rescrape(key: str = "", db: Session = Depends(get_db)):
         inserted += 1
 
     db.commit()
-    results["steps"].append(f"Inserted {inserted} PRs into database")
+    results["steps"].append(f"Inserted {inserted} scraped PRs into database")
 
     # Step 6: Summary
     new_count = db.query(func.count(PR.id)).scalar()
     unique_exercises = db.query(PR.exercise).distinct().count()
 
-    # Per-user breakdown
     user_counts = {}
     for pr_data in parsed_prs:
         name = USER_MAP.get(pr_data["user_id"], ("unknown", "Unknown"))[1]
         user_counts[name] = user_counts.get(name, 0) + 1
 
-    # Unique exercise list
-    exercise_names = sorted(set(pr_data["exercise"] for pr_data in parsed_prs))
+    exercise_names = sorted(set(pr_data["exercise"] for pr_data in parsed_prs)) if parsed_prs else []
 
     results["summary"] = {
         "old_pr_count": old_count,
         "new_pr_count": new_count,
+        "preserved_manual_prs": preserved_count,
+        "scraped_prs_inserted": inserted,
         "unique_exercises": unique_exercises,
         "user_breakdown": user_counts,
         "exercise_names": exercise_names
