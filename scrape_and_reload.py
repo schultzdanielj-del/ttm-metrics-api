@@ -48,6 +48,7 @@ BOT_IDS = set()
 
 # =============================================================================
 # Exercise Name Normalization
+# (Must stay in sync with discord-bot/exercise_normalization.py)
 # =============================================================================
 
 def normalize_exercise_name(exercise: str, weight: Optional[float] = None) -> str:
@@ -174,13 +175,6 @@ def normalize_exercise_name(exercise: str, weight: Optional[float] = None) -> st
     if exercise.endswith(' bench') and 'press' not in exercise:
         exercise = exercise + ' press'
     exercise = re.sub(r'\bdumbbell (seated|standing|incline|flat|decline)\b', r'\1 dumbbell', exercise)
-    # TRX exercise normalization
-    exercise = re.sub(r'\btrx bicep tricep\b', 'trx tricep', exercise)
-    exercise = re.sub(r'\btrx bicep curl tricep\b', 'trx tricep', exercise)
-    if re.search(r'\btrx bicep\b', exercise) and 'curl' not in exercise:
-        exercise = re.sub(r'\btrx bicep\b', 'trx bicep curl', exercise)
-    if re.search(r'\btrx tricep\b', exercise) and 'extension' not in exercise:
-        exercise = re.sub(r'\btrx tricep\b', 'trx tricep extension', exercise)
     exercise = re.sub(r'\s+\d+\s*second.*$', '', exercise)
     exercise = re.sub(r'\s+(each|per)\s+side$', '', exercise)
     exercise = re.sub(r'\s+x\d+$', '', exercise)
@@ -337,8 +331,8 @@ def parse_weight_reps(text: str) -> List[Tuple[str, float, int]]:
         r'^(what|how|why|when|where|who|is|are|do|does|can|could|should|would)',
         r'^(yessir|yes|no|yeah|nah|lol|haha|nice|great|awesome|thanks)',
         r'^(needed|grinding|another|holy|you)',
-        r'^(i |i\'m|i\'ve|i\'ll|the |it |err )',
-        r'^(s&p |what\'s|from the)',
+        r"^(i |i'm|i've|i'll|the |it |err )",
+        r"^(s&p |what's|from the)",
         r'^(off to|just go|say |make it|wtf )',
         r'^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d',
         r'^\d+\s*set\s',
