@@ -6,7 +6,7 @@ Handles all PR logging, workout tracking, and XP management
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from sqlalchemy import and_
+from sqlalchemy import and_, or_
 from typing import List, Optional
 from datetime import datetime, timedelta
 import secrets
@@ -29,7 +29,7 @@ from config import XP_REWARDS_API, XP_ENABLED
 app = FastAPI(
     title="TTM Metrics API",
     description="Three Target Method - Fitness tracking and gamification API",
-    version="1.3.1"
+    version="1.4.0"
 )
 
 app.add_middleware(
@@ -48,7 +48,7 @@ def startup_event():
 
 @app.get("/")
 def root():
-    return {"status": "healthy", "service": "TTM Metrics API", "version": "1.3.1"}
+    return {"status": "healthy", "service": "TTM Metrics API", "version": "1.4.0"}
 
 
 # ============================================================================
@@ -143,6 +143,37 @@ def _exercise_similarity(name_a: str, name_b: str) -> float:
     return len(overlap) / min_len if min_len > 0 else 0.0
 
 
+def _find_all_matching_names(db: Session, user_id: str, exercise_name: str) -> List[str]:
+    """
+    Find ALL PR exercise name variants in the database that match a given exercise name.
+    Uses normalized key matching first, then fuzzy similarity >= 0.7.
+    Returns a list of all matching DB exercise names (may include the input name itself).
+    """
+    all_pr_exercises = db.query(PR.exercise).filter(PR.user_id == user_id).distinct().all()
+    pr_names = [name for (name,) in all_pr_exercises]
+    
+    if not pr_names:
+        return []
+    
+    target_nk = _normalize_exercise_key(exercise_name)
+    matched = set()
+    
+    for pr_name in pr_names:
+        # Exact string match
+        if pr_name == exercise_name:
+            matched.add(pr_name)
+            continue
+        # Normalized key match
+        if _normalize_exercise_key(pr_name) == target_nk:
+            matched.add(pr_name)
+            continue
+        # Fuzzy similarity match
+        if _exercise_similarity(exercise_name, pr_name) >= 0.7:
+            matched.add(pr_name)
+    
+    return list(matched)
+
+
 # ============================================================================
 # Core Helpers
 # ============================================================================
@@ -169,6 +200,16 @@ def _get_best_pr_for_exercise(db: Session, user_id: str, exercise: str):
     ).order_by(PR.estimated_1rm.desc()).first()
 
 
+def _get_best_pr_across_names(db: Session, user_id: str, names: List[str]):
+    """Get the single best PR record across multiple exercise name variants."""
+    if not names:
+        return None
+    return db.query(PR).filter(
+        PR.user_id == user_id,
+        PR.exercise.in_(names)
+    ).order_by(PR.estimated_1rm.desc()).first()
+
+
 def _format_pr(pr) -> str:
     if not pr:
         return None
@@ -180,47 +221,21 @@ def _format_pr(pr) -> str:
 
 def _find_best_pr_match(db: Session, user_id: str, workout_exercise_name: str):
     """
-    Find the best PR for a workout exercise, using fuzzy matching.
-    Returns (best_pr_record, matched_pr_exercise_name) or (None, None).
+    Find the best PR for a workout exercise, using fuzzy matching across ALL name variants.
+    Returns (best_pr_record, canonical_pr_exercise_name) or (None, None).
     
-    Strategy:
-    1. Try exact match
-    2. Try normalized key match
-    3. Try fuzzy similarity (threshold >= 0.7)
+    The canonical name returned is the exercise name of the best PR record found.
     """
-    # 1. Exact match
-    best = _get_best_pr_for_exercise(db, user_id, workout_exercise_name)
-    if best:
-        return best, workout_exercise_name
+    # Find all matching name variants
+    matching_names = _find_all_matching_names(db, user_id, workout_exercise_name)
     
-    # Get all PR exercise names for this user
-    all_pr_exercises = db.query(PR.exercise).filter(PR.user_id == user_id).distinct().all()
-    pr_names = [name for (name,) in all_pr_exercises]
-    
-    if not pr_names:
+    if not matching_names:
         return None, None
     
-    # 2. Normalized key match
-    nk = _normalize_exercise_key(workout_exercise_name)
-    for pr_name in pr_names:
-        if _normalize_exercise_key(pr_name) == nk:
-            best = _get_best_pr_for_exercise(db, user_id, pr_name)
-            if best:
-                return best, pr_name
-    
-    # 3. Fuzzy similarity match
-    best_score = 0.0
-    best_match_name = None
-    for pr_name in pr_names:
-        score = _exercise_similarity(workout_exercise_name, pr_name)
-        if score > best_score:
-            best_score = score
-            best_match_name = pr_name
-    
-    if best_score >= 0.7 and best_match_name:
-        best = _get_best_pr_for_exercise(db, user_id, best_match_name)
-        if best:
-            return best, best_match_name
+    # Get the best PR across all variants
+    best = _get_best_pr_across_names(db, user_id, matching_names)
+    if best:
+        return best, best.exercise
     
     return None, None
 
@@ -228,10 +243,9 @@ def _find_best_pr_match(db: Session, user_id: str, workout_exercise_name: str):
 def _build_best_prs_for_workouts(db: Session, user_id: str, workouts: dict) -> dict:
     """
     Build best_prs dict keyed by workout exercise name (as the frontend expects).
-    Uses normalized keys + fuzzy fallback to match workout names against PR names.
+    Uses normalized keys + fuzzy matching to find best PR across ALL name variants.
     """
     best_prs = {}
-    seen_pr_names = set()  # Track which PR names have been claimed
     
     for letter, exercises in workouts.items():
         for ex in exercises:
@@ -239,10 +253,11 @@ def _build_best_prs_for_workouts(db: Session, user_id: str, workouts: dict) -> d
             if workout_name in best_prs:
                 continue
             
-            best, matched_name = _find_best_pr_match(db, user_id, workout_name)
-            if best and matched_name not in seen_pr_names:
-                best_prs[workout_name] = _format_pr(best)
-                seen_pr_names.add(matched_name)
+            matching_names = _find_all_matching_names(db, user_id, workout_name)
+            if matching_names:
+                best = _get_best_pr_across_names(db, user_id, matching_names)
+                if best:
+                    best_prs[workout_name] = _format_pr(best)
     
     return best_prs
 
@@ -633,9 +648,10 @@ def dashboard_log_exercise(unique_code: str, body: dict, db: Session = Depends(g
 
     estimated_1rm = calculate_1rm(weight, reps)
 
-    # Find matching PR using fuzzy match
-    best, matched_pr_name = _find_best_pr_match(db, member.user_id, exercise)
-    store_as = matched_pr_name if matched_pr_name else exercise
+    # Find all matching PR names and best PR across them
+    matching_names = _find_all_matching_names(db, member.user_id, exercise)
+    best = _get_best_pr_across_names(db, member.user_id, matching_names) if matching_names else None
+    store_as = best.exercise if best else exercise
 
     if best:
         is_pr = estimated_1rm > best.estimated_1rm if weight > 0 else reps > best.reps
@@ -671,8 +687,9 @@ def dashboard_log_exercise(unique_code: str, body: dict, db: Session = Depends(g
 
     db.commit()
 
-    # Get updated best
-    updated_best = _get_best_pr_for_exercise(db, member.user_id, store_as)
+    # Get updated best across all variants
+    all_names = _find_all_matching_names(db, member.user_id, store_as)
+    updated_best = _get_best_pr_across_names(db, member.user_id, all_names) if all_names else None
     return {
         "is_pr": is_pr,
         "new_best_pr": _format_pr(updated_best),
@@ -821,14 +838,23 @@ def revert_dashboard_swap(unique_code: str, body: dict, db: Session = Depends(ge
 
 @app.get("/api/dashboard/{unique_code}/pr-history/{exercise}", tags=["Dashboard"])
 def get_dashboard_pr_history(unique_code: str, exercise: str, db: Session = Depends(get_db)):
+    """
+    Get PR history for an exercise, aggregating across all name variants.
+    Uses normalized + fuzzy matching so "Chest Supported DB Rows" finds records
+    stored as "chest supported dumbbell row", "chest supported db rows", etc.
+    """
     member = _resolve_member(unique_code, db)
-    # Use fuzzy matching to find the right PR exercise name
-    _, matched_name = _find_best_pr_match(db, member.user_id, exercise)
-    lookup_name = matched_name if matched_name else exercise
     
+    # Find ALL matching name variants
+    matching_names = _find_all_matching_names(db, member.user_id, exercise)
+    
+    if not matching_names:
+        return []
+    
+    # Query across all matching names
     prs = db.query(PR).filter(
         PR.user_id == member.user_id,
-        PR.exercise == lookup_name
+        PR.exercise.in_(matching_names)
     ).order_by(PR.timestamp.asc()).all()
     
     return [
@@ -883,7 +909,7 @@ def get_full_dashboard(unique_code: str, db: Session = Depends(get_db)):
             "setup_notes": ex.setup_notes, "video_link": ex.video_link
         })
 
-    # Best PRs - uses normalized + fuzzy matching
+    # Best PRs - uses normalized + fuzzy matching across ALL name variants
     best_prs = _build_best_prs_for_workouts(db, uid, workouts)
 
     # Deload status
@@ -1004,6 +1030,40 @@ def can_checkin_core_foods(user_id: str, db: Session = Depends(get_db)):
         and_(CoreFoodsCheckin.user_id == user_id, CoreFoodsCheckin.date == today)
     ).first()
     return {"can_checkin": existing is None}
+
+
+# ============================================================================
+# Debug / Admin Endpoints
+# ============================================================================
+
+@app.get("/api/debug/{unique_code}/exercise-names", tags=["Debug"])
+def debug_exercise_names(unique_code: str, db: Session = Depends(get_db)):
+    """Show all PR exercise names and their normalized keys for debugging name matching."""
+    member = _resolve_member(unique_code, db)
+    all_pr_exercises = db.query(PR.exercise).filter(PR.user_id == member.user_id).distinct().all()
+    
+    # Group by normalized key
+    groups = {}
+    for (name,) in all_pr_exercises:
+        nk = _normalize_exercise_key(name)
+        if nk not in groups:
+            groups[nk] = []
+        groups[nk].append(name)
+    
+    # Also show workout plan names and what they match to
+    exercises = db.query(Workout).filter(Workout.user_id == member.user_id).all()
+    workout_matches = {}
+    for ex in exercises:
+        matching = _find_all_matching_names(db, member.user_id, ex.exercise_name)
+        workout_matches[ex.exercise_name] = {
+            "normalized_key": _normalize_exercise_key(ex.exercise_name),
+            "matched_pr_names": matching
+        }
+    
+    return {
+        "pr_name_groups": groups,
+        "workout_plan_matches": workout_matches
+    }
 
 
 if __name__ == "__main__":
