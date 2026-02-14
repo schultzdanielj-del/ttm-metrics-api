@@ -1,9 +1,22 @@
-@app.post("/api/admin/bulk-core-foods", tags=["Admin"])
+"""Admin endpoint for bulk core foods migration from SQLite to PostgreSQL."""
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+from sqlalchemy import and_
+from datetime import datetime
+
+from database import get_db, CoreFoodsCheckin
+
+router = APIRouter()
+
+
+@router.post("/api/admin/bulk-core-foods", tags=["Admin"])
 def admin_bulk_core_foods(body: dict, db: Session = Depends(get_db)):
     """
     Bulk insert core foods checkins. Bypasses date validation.
     Body: {"key": "ADMIN_KEY", "records": [{"user_id", "date", "message_id", "timestamp", "xp_awarded"}, ...]}
     """
+    import os
     ADMIN_KEY = os.environ.get("ADMIN_KEY", "4ifQC_DLzlXM1c5PC6egwvf2p5GgbMR3")
     if body.get("key") != ADMIN_KEY:
         raise HTTPException(status_code=403, detail="Invalid admin key")
@@ -27,7 +40,7 @@ def admin_bulk_core_foods(body: dict, db: Session = Depends(get_db)):
         ts_str = r.get("timestamp", "")
         try:
             ts = datetime.fromisoformat(ts_str) if ts_str else datetime.utcnow()
-        except:
+        except Exception:
             ts = datetime.utcnow()
         db.add(CoreFoodsCheckin(
             user_id=user_id, date=date,
