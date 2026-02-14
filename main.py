@@ -32,7 +32,7 @@ from admin_dump import router as admin_dump_router
 app = FastAPI(
     title="TTM Metrics API",
     description="Three Target Method - Fitness tracking and gamification API",
-    version="1.5.3"
+    version="1.5.4"
 )
 
 app.add_middleware(
@@ -53,7 +53,7 @@ def startup_event():
 
 @app.get("/")
 def root():
-    return {"status": "healthy", "service": "TTM Metrics API", "version": "1.5.3"}
+    return {"status": "healthy", "service": "TTM Metrics API", "version": "1.5.4"}
 
 
 # ============================================================================
@@ -1069,6 +1069,21 @@ def debug_exercise_names(unique_code: str, db: Session = Depends(get_db)):
     return {
         "pr_name_groups": groups,
         "workout_plan_matches": workout_matches
+    }
+
+
+@app.get("/api/admin/config", tags=["Admin"])
+def admin_config(key: str = ""):
+    """
+    Return environment-based config for Claude session bootstrap.
+    Secured by admin key. Returns bot token and admin key from env vars.
+    """
+    ADMIN_KEY = os.environ.get("ADMIN_KEY", "4ifQC_DLzlXM1c5PC6egwvf2p5GgbMR3")
+    if key != ADMIN_KEY:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    return {
+        "bot_token": os.environ.get("TTM_BOT_TOKEN", ""),
+        "admin_key": ADMIN_KEY,
     }
 
 
