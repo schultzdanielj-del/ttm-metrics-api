@@ -1,0 +1,7 @@
+Add these two lines to main.py:
+1. After 'from admin_dump import router as admin_dump_router':
+   from admin_rebuild import router as admin_rebuild_router
+2. After 'app.include_router(admin_dump_router)':
+   app.include_router(admin_rebuild_router)
+
+This is a reference file, not the actual patch.
