@@ -11,11 +11,13 @@ from typing import List, Optional
 from datetime import datetime, timedelta
 import secrets
 import re
+import os
 
 from database import (
     get_db, init_db, PR, Workout, WorkoutCompletion, UserXP,
     DashboardMember, CoreFoodsLog as CoreFoodsLogModel, WeeklyLog,
-    CoreFoodsCheckin, UserNote, ExerciseSwap, WorkoutSession
+    CoreFoodsCheckin, UserNote, ExerciseSwap, WorkoutSession,
+    SessionLocal
 )
 from schemas import (
     PRCreate, PRResponse, BestPRResponse,
@@ -29,7 +31,7 @@ from config import XP_REWARDS_API, XP_ENABLED
 app = FastAPI(
     title="TTM Metrics API",
     description="Three Target Method - Fitness tracking and gamification API",
-    version="1.4.0"
+    version="1.5.0"
 )
 
 app.add_middleware(
@@ -48,7 +50,7 @@ def startup_event():
 
 @app.get("/")
 def root():
-    return {"status": "healthy", "service": "TTM Metrics API", "version": "1.4.0"}
+    return {"status": "healthy", "service": "TTM Metrics API", "version": "1.5.0"}
 
 
 # ============================================================================
@@ -1064,6 +1066,164 @@ def debug_exercise_names(unique_code: str, db: Session = Depends(get_db)):
         "pr_name_groups": groups,
         "workout_plan_matches": workout_matches
     }
+
+
+# ============================================================================
+# Admin Rescrape Endpoint
+# ============================================================================
+
+ADMIN_KEY = os.getenv("ADMIN_KEY", "4ifQC_DLzlXM1c5PC6egwvf2p5GgbMR3")
+
+@app.get("/api/admin/rescrape", tags=["Admin"])
+def admin_rescrape(key: str = "", db: Session = Depends(get_db)):
+    """
+    Wipe all PRs and re-scrape from Discord PR channel with full normalization.
+    Requires admin key as query parameter.
+    Usage: GET /api/admin/rescrape?key=<ADMIN_KEY>
+    """
+    if key != ADMIN_KEY:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+
+    import requests
+    import time
+    from scrape_and_reload import (
+        normalize_exercise_name, parse_message,
+        USER_MAP, PR_CHANNEL_ID
+    )
+
+    DISCORD_BOT_TOKEN = os.getenv("TTM_BOT_TOKEN", "")
+    if not DISCORD_BOT_TOKEN:
+        raise HTTPException(status_code=500, detail="TTM_BOT_TOKEN not set in environment")
+
+    results = {"steps": []}
+
+    # Step 1: Count existing PRs
+    from sqlalchemy import func
+    old_count = db.query(func.count(PR.id)).scalar()
+    results["steps"].append(f"Existing PRs before wipe: {old_count}")
+
+    # Step 2: Wipe all PRs
+    db.query(PR).delete()
+    db.commit()
+    results["steps"].append("Wiped all PRs from database")
+
+    # Step 3: Fetch all messages from Discord PR channel
+    headers = {
+        "Authorization": f"Bot {DISCORD_BOT_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    all_messages = []
+    before = None
+    batch_num = 0
+
+    while True:
+        batch_num += 1
+        params = {"limit": 100}
+        if before:
+            params["before"] = before
+
+        resp = requests.get(
+            f"https://discord.com/api/v10/channels/{PR_CHANNEL_ID}/messages",
+            headers=headers, params=params
+        )
+
+        if resp.status_code == 429:
+            retry_after = resp.json().get("retry_after", 1)
+            time.sleep(retry_after + 0.5)
+            continue
+
+        if resp.status_code != 200:
+            results["steps"].append(f"Discord API error: {resp.status_code} - {resp.text[:200]}")
+            results["error"] = True
+            return results
+
+        messages = resp.json()
+        if not messages:
+            break
+
+        all_messages.extend(messages)
+        before = messages[-1]["id"]
+
+        if len(messages) < 100:
+            break
+
+        time.sleep(0.5)
+
+    all_messages.reverse()
+    results["steps"].append(f"Fetched {len(all_messages)} messages from Discord")
+
+    # Step 4: Parse and normalize
+    parsed_prs = []
+    for msg in all_messages:
+        author = msg.get("author", {})
+        author_id = author.get("id", "")
+        content = msg.get("content", "")
+        message_id = msg.get("id", "")
+
+        if author.get("bot", False):
+            continue
+        if author_id not in USER_MAP:
+            continue
+
+        username, display_name = USER_MAP[author_id]
+        prs = parse_message(content)
+
+        for exercise, weight, reps in prs:
+            estimated_1rm = calculate_1rm(weight, reps)
+            parsed_prs.append({
+                "user_id": author_id,
+                "username": username,
+                "exercise": exercise,
+                "weight": weight,
+                "reps": reps,
+                "estimated_1rm": estimated_1rm,
+                "message_id": message_id,
+                "channel_id": PR_CHANNEL_ID,
+            })
+
+    results["steps"].append(f"Parsed {len(parsed_prs)} PRs from messages")
+
+    # Step 5: Insert all PRs directly
+    inserted = 0
+    for pr_data in parsed_prs:
+        db.add(PR(
+            user_id=pr_data["user_id"],
+            username=pr_data["username"],
+            exercise=pr_data["exercise"],
+            weight=pr_data["weight"],
+            reps=pr_data["reps"],
+            estimated_1rm=pr_data["estimated_1rm"],
+            message_id=pr_data["message_id"],
+            channel_id=pr_data["channel_id"],
+            timestamp=datetime.utcnow()
+        ))
+        inserted += 1
+
+    db.commit()
+    results["steps"].append(f"Inserted {inserted} PRs into database")
+
+    # Step 6: Summary
+    new_count = db.query(func.count(PR.id)).scalar()
+    unique_exercises = db.query(PR.exercise).distinct().count()
+
+    # Per-user breakdown
+    user_counts = {}
+    for pr_data in parsed_prs:
+        name = USER_MAP.get(pr_data["user_id"], ("unknown", "Unknown"))[1]
+        user_counts[name] = user_counts.get(name, 0) + 1
+
+    # Unique exercise list
+    exercise_names = sorted(set(pr_data["exercise"] for pr_data in parsed_prs))
+
+    results["summary"] = {
+        "old_pr_count": old_count,
+        "new_pr_count": new_count,
+        "unique_exercises": unique_exercises,
+        "user_breakdown": user_counts,
+        "exercise_names": exercise_names
+    }
+
+    return results
 
 
 if __name__ == "__main__":
