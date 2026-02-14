@@ -28,11 +28,12 @@ from schemas import (
 )
 from config import XP_REWARDS_API, XP_ENABLED
 from admin_dump import router as admin_dump_router
+from admin_rebuild import router as admin_rebuild_router
 
 app = FastAPI(
     title="TTM Metrics API",
     description="Three Target Method - Fitness tracking and gamification API",
-    version="1.5.5"
+    version="1.5.6"
 )
 
 app.add_middleware(
@@ -44,6 +45,7 @@ app.add_middleware(
 )
 
 app.include_router(admin_dump_router)
+app.include_router(admin_rebuild_router)
 
 
 @app.on_event("startup")
@@ -53,7 +55,7 @@ def startup_event():
 
 @app.get("/")
 def root():
-    return {"status": "healthy", "service": "TTM Metrics API", "version": "1.5.5"}
+    return {"status": "healthy", "service": "TTM Metrics API", "version": "1.5.6"}
 
 
 # ============================================================================
