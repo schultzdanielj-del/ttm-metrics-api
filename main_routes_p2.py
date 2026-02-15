@@ -264,7 +264,7 @@ def get_full_dashboard(unique_code: str, db: Session = Depends(get_db)):
     for s in session_rows:
         if (now - s.opened_at).total_seconds() < 96 * 3600:
             sessions[s.workout_letter] = {"opened_at": s.opened_at.isoformat(), "log_count": s.log_count}
-    return {"username": member.username, "workouts": workouts, "best_prs": best_prs, "deload": deload, "last_workout_dates": last_workout_dates, "core_foods": core_foods, "notes": notes, "swaps": swaps, "sessions": sessions}
+    return {"username": member.username, "full_name": member.full_name, "workouts": workouts, "best_prs": best_prs, "deload": deload, "last_workout_dates": last_workout_dates, "core_foods": core_foods, "notes": notes, "swaps": swaps, "sessions": sessions}
 
 
 @router.post("/api/weekly-logs", tags=["Weekly Logs"])
