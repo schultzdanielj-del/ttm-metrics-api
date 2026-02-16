@@ -1,0 +1,111 @@
+"""
+Discord Notifications for TTM Dashboard Actions
+Posts to #pr-city channel via Discord REST API using bot token.
+"""
+
+import os
+import requests
+from datetime import datetime, timedelta
+from sqlalchemy.orm import Session
+from database import DashboardMember
+
+CHANNEL_ID = "1459000944028028970"
+
+
+def _get_bot_token():
+    return os.environ.get("TTM_BOT_TOKEN", "")
+
+
+def _get_display_name(db: Session, user_id: str) -> str:
+    """Get Discord display name from DashboardMembers. Falls back to full_name."""
+    member = db.query(DashboardMember).filter(DashboardMember.user_id == user_id).first()
+    if not member:
+        return "Someone"
+    return member.username or member.full_name or "Someone"
+
+
+def _get_time_ref(date_str: str) -> str:
+    """Convert date string to relative time reference in EST."""
+    try:
+        target = datetime.fromisoformat(date_str).date()
+    except (ValueError, TypeError):
+        return "today"
+    # Approximate EST as UTC-5
+    now_est = datetime.utcnow() - timedelta(hours=5)
+    today_est = now_est.date()
+    diff = (today_est - target).days
+    if diff == 0:
+        return "today"
+    elif diff == 1:
+        return "yesterday"
+    else:
+        return target.strftime("%A")  # day name
+
+
+def _post_message(content: str) -> str | None:
+    """Post a message to #pr-city. Returns message ID on success, None on failure."""
+    token = _get_bot_token()
+    if not token:
+        return None
+    try:
+        resp = requests.post(
+            f"https://discord.com/api/v10/channels/{CHANNEL_ID}/messages",
+            headers={"Authorization": f"Bot {token}", "Content-Type": "application/json"},
+            json={"content": content},
+            timeout=5,
+        )
+        if resp.status_code in (200, 201):
+            return resp.json().get("id")
+    except Exception:
+        pass
+    return None
+
+
+def _search_and_delete_message(footer_tag: str):
+    """Search last 100 messages in #pr-city for a message containing footer_tag, then delete it."""
+    token = _get_bot_token()
+    if not token:
+        return
+    try:
+        resp = requests.get(
+            f"https://discord.com/api/v10/channels/{CHANNEL_ID}/messages",
+            headers={"Authorization": f"Bot {token}"},
+            params={"limit": 100},
+            timeout=5,
+        )
+        if resp.status_code != 200:
+            return
+        for msg in resp.json():
+            if footer_tag in msg.get("content", ""):
+                requests.delete(
+                    f"https://discord.com/api/v10/channels/{CHANNEL_ID}/messages/{msg['id']}",
+                    headers={"Authorization": f"Bot {token}"},
+                    timeout=5,
+                )
+                return
+    except Exception:
+        pass
+
+
+def post_core_foods_notification(db: Session, user_id: str, date: str, checked: bool):
+    """Post or delete a core foods notification in #pr-city."""
+    footer_tag = f"[cf:{user_id}:{date}]"
+    if checked:
+        name = _get_display_name(db, user_id)
+        time_ref = _get_time_ref(date)
+        content = f"{name} ate their core foods {time_ref}\n\u200B\n||{footer_tag}||"
+        _post_message(content)
+    else:
+        _search_and_delete_message(footer_tag)
+
+
+def post_pr_notification(db: Session, user_id: str, exercise: str, old_1rm: float, new_1rm: float):
+    """Post a PR notification in #pr-city when user beats their personal best."""
+    if old_1rm <= 0:
+        return
+    improvement = ((new_1rm - old_1rm) / old_1rm) * 100
+    if improvement <= 0:
+        return
+    name = _get_display_name(db, user_id)
+    content = f"{name} just beat their last personal best on {exercise} by {improvement:.1f}%"
+    _post_message(content)

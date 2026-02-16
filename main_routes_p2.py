@@ -28,6 +28,7 @@ from main_routes import (
     _format_pr, _find_all_matching_names, _build_best_prs_for_workouts,
     calculate_1rm, _normalize_exercise_key, award_xp_internal
 )
+from discord_notifications import post_core_foods_notification, post_pr_notification
 
 router = APIRouter()
 
@@ -80,10 +81,12 @@ def toggle_dashboard_core_foods(unique_code: str, body: dict, db: Session = Depe
     if existing:
         db.delete(existing)
         db.commit()
+        post_core_foods_notification(db, member.user_id, date, checked=False)
         return {"checked": False, "date": date}
     checkin = CoreFoodsCheckin(user_id=member.user_id, date=date, message_id=f"dashboard-{datetime.utcnow().isoformat()}", timestamp=datetime.utcnow(), xp_awarded=0)
     db.add(checkin)
     db.commit()
+    post_core_foods_notification(db, member.user_id, date, checked=True)
     return {"checked": True, "date": date}
 
 
@@ -100,6 +103,7 @@ def dashboard_log_exercise(unique_code: str, body: dict, db: Session = Depends(g
     matching_names = _find_all_matching_names(db, member.user_id, exercise)
     best = _get_best_pr_across_names(db, member.user_id, matching_names) if matching_names else None
     store_as = best.exercise if best else exercise
+    old_1rm = best.estimated_1rm if best else None
     is_pr = (estimated_1rm > best.estimated_1rm if weight > 0 else reps > best.reps) if best else True
     new_pr = PR(user_id=member.user_id, username=member.username, exercise=store_as, weight=weight, reps=reps, estimated_1rm=estimated_1rm, message_id=f"dashboard-{datetime.utcnow().isoformat()}", channel_id="dashboard", timestamp=datetime.utcnow())
     db.add(new_pr)
@@ -113,6 +117,8 @@ def dashboard_log_exercise(unique_code: str, body: dict, db: Session = Depends(g
         session = WorkoutSession(user_id=member.user_id, workout_letter=workout_letter, opened_at=now, log_count=1)
         db.add(session)
     db.commit()
+    if is_pr and old_1rm is not None:
+        post_pr_notification(db, member.user_id, store_as, old_1rm, estimated_1rm)
     all_names = _find_all_matching_names(db, member.user_id, store_as)
     updated_best = _get_best_pr_across_names(db, member.user_id, all_names) if all_names else None
     return {"is_pr": is_pr, "new_best_pr": _format_pr(updated_best), "estimated_1rm": estimated_1rm}
