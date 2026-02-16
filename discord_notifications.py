@@ -148,7 +148,15 @@ def post_pr_notification(db: Session, user_id: str, exercise: str, old_1rm: floa
     if improvement <= 0:
         return
     name = _get_display_name(db, user_id)
+    # Delete any existing PR notification for this exercise first (re-log scenario)
+    _find_and_delete_bot_message(name, f"personal best on {exercise}")
     content = f"{name} just beat their last personal best on {exercise} by {improvement:.1f}%"
     msg_id = _post_message(content)
     if msg_id:
         _react_to_message(msg_id, "\U0001f4aa")  # 💪
+
+
+def delete_pr_notification(db: Session, user_id: str, exercise: str):
+    """Delete a PR notification from #pr-city when a re-log undoes a PR."""
+    name = _get_display_name(db, user_id)
+    _find_and_delete_bot_message(name, f"personal best on {exercise}")

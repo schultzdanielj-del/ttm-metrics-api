@@ -28,7 +28,7 @@ from main_routes import (
     _format_pr, _find_all_matching_names, _build_best_prs_for_workouts,
     calculate_1rm, _normalize_exercise_key, award_xp_internal
 )
-from discord_notifications import post_core_foods_notification, post_pr_notification
+from discord_notifications import post_core_foods_notification, post_pr_notification, delete_pr_notification
 
 router = APIRouter()
 
@@ -101,24 +101,59 @@ def dashboard_log_exercise(unique_code: str, body: dict, db: Session = Depends(g
         raise HTTPException(status_code=400, detail="exercise and reps required")
     estimated_1rm = calculate_1rm(weight, reps)
     matching_names = _find_all_matching_names(db, member.user_id, exercise)
-    best = _get_best_pr_across_names(db, member.user_id, matching_names) if matching_names else None
-    store_as = best.exercise if best else exercise
-    old_1rm = best.estimated_1rm if best else None
-    is_pr = (estimated_1rm > best.estimated_1rm if weight > 0 else reps > best.reps) if best else True
-    new_pr = PR(user_id=member.user_id, username=member.username, exercise=store_as, weight=weight, reps=reps, estimated_1rm=estimated_1rm, message_id=f"dashboard-{datetime.utcnow().isoformat()}", channel_id="dashboard", timestamp=datetime.utcnow())
-    db.add(new_pr)
+    store_as = exercise
+    if matching_names:
+        existing = db.query(PR).filter(PR.user_id == member.user_id, PR.exercise.in_(matching_names)).first()
+        if existing:
+            store_as = existing.exercise
+
+    # Find active session
     now = datetime.utcnow()
     session = db.query(WorkoutSession).filter(WorkoutSession.user_id == member.user_id, WorkoutSession.workout_letter == workout_letter).first()
+    session_opened = None
     if session and (now - session.opened_at).total_seconds() < 96 * 3600:
-        session.log_count += 1
+        session_opened = session.opened_at
+    
+    # Delete any existing PR row for this exercise within the current session
+    prev_in_session = None
+    if session_opened:
+        prev_in_session = db.query(PR).filter(
+            PR.user_id == member.user_id,
+            PR.exercise == store_as,
+            PR.timestamp >= session_opened,
+            PR.channel_id == "dashboard"
+        ).first()
+        if prev_in_session:
+            db.delete(prev_in_session)
+            db.flush()
+
+    # Now evaluate PR against best excluding the just-deleted row
+    all_names = _find_all_matching_names(db, member.user_id, store_as)
+    best = _get_best_pr_across_names(db, member.user_id, all_names) if all_names else None
+    old_1rm = best.estimated_1rm if best else None
+    is_pr = (estimated_1rm > best.estimated_1rm if weight > 0 else reps > best.reps) if best else True
+
+    # Insert new PR row
+    new_pr = PR(user_id=member.user_id, username=member.username, exercise=store_as, weight=weight, reps=reps, estimated_1rm=estimated_1rm, message_id=f"dashboard-{datetime.utcnow().isoformat()}", channel_id="dashboard", timestamp=datetime.utcnow())
+    db.add(new_pr)
+
+    # Update session
+    if session_opened:
+        session.log_count = session.log_count  # session already active, count stays (replace not add)
     else:
         if session:
             db.delete(session)
         session = WorkoutSession(user_id=member.user_id, workout_letter=workout_letter, opened_at=now, log_count=1)
         db.add(session)
     db.commit()
+
+    # Discord notifications
     if is_pr and old_1rm is not None:
         post_pr_notification(db, member.user_id, store_as, old_1rm, estimated_1rm)
+    elif not is_pr and prev_in_session is not None:
+        # Previous log may have posted a PR notification, clean it up
+        delete_pr_notification(db, member.user_id, store_as)
+
     all_names = _find_all_matching_names(db, member.user_id, store_as)
     updated_best = _get_best_pr_across_names(db, member.user_id, all_names) if all_names else None
     return {"is_pr": is_pr, "new_best_pr": _format_pr(updated_best), "estimated_1rm": estimated_1rm}
