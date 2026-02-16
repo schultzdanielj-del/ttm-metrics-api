@@ -270,7 +270,33 @@ def get_full_dashboard(unique_code: str, db: Session = Depends(get_db)):
     for s in session_rows:
         if (now - s.opened_at).total_seconds() < 96 * 3600:
             sessions[s.workout_letter] = {"opened_at": s.opened_at.isoformat(), "log_count": s.log_count}
-    return {"username": member.username, "full_name": member.full_name, "workouts": workouts, "best_prs": best_prs, "deload": deload, "last_workout_dates": last_workout_dates, "core_foods": core_foods, "notes": notes, "swaps": swaps, "sessions": sessions}
+    # Build session_prs: for each active session, find exercises where the all-time best PR was set during the session window
+    session_prs = {}
+    for letter, sess_info in sessions.items():
+        sess_opened = datetime.fromisoformat(sess_info["opened_at"])
+        sess_end = sess_opened + timedelta(hours=96)
+        if letter not in workouts:
+            continue
+        for idx, ex in enumerate(workouts[letter]):
+            ex_name = ex["name"]
+            # Check swaps
+            swap_key = f"{letter}:{idx}"
+            if swap_key in swaps:
+                ex_name = swaps[swap_key]["swapped"]
+            # Get all PRs for this exercise
+            all_prs = db.query(PR).filter(PR.user_id == uid, PR.exercise == ex_name).order_by(PR.estimated_1rm.desc()).all()
+            if not all_prs:
+                continue
+            best = all_prs[0]
+            # Was the all-time best set during this session?
+            if best.timestamp >= sess_opened and best.timestamp < sess_end:
+                # Confirm there was a prior entry (not a first-ever log)
+                has_prior = any(p.timestamp < sess_opened for p in all_prs)
+                if has_prior:
+                    input_key = f"{letter}:{ex_name}:{idx}"
+                    session_prs[input_key] = {"w": "BW" if best.weight == 0 else str(int(best.weight)), "r": str(best.reps)}
+
+    return {"username": member.username, "full_name": member.full_name, "workouts": workouts, "best_prs": best_prs, "deload": deload, "last_workout_dates": last_workout_dates, "core_foods": core_foods, "notes": notes, "swaps": swaps, "sessions": sessions, "session_prs": session_prs}
 
 
 @router.post("/api/weekly-logs", tags=["Weekly Logs"])
