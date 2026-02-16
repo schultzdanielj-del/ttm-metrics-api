@@ -16,6 +16,24 @@ def _get_bot_token():
     return os.environ.get("TTM_BOT_TOKEN", "")
 
 
+def _get_bot_user_id():
+    """Get the bot's own user ID for filtering messages."""
+    token = _get_bot_token()
+    if not token:
+        return None
+    try:
+        resp = requests.get(
+            "https://discord.com/api/v10/users/@me",
+            headers={"Authorization": f"Bot {token}"},
+            timeout=5,
+        )
+        if resp.status_code == 200:
+            return resp.json().get("id")
+    except Exception:
+        pass
+    return None
+
+
 def _get_display_name(db: Session, user_id: str) -> str:
     """Get Discord display name from DashboardMembers. Falls back to full_name."""
     member = db.query(DashboardMember).filter(DashboardMember.user_id == user_id).first()
@@ -76,10 +94,13 @@ def _react_to_message(message_id: str, emoji: str):
         pass
 
 
-def _search_and_delete_message(footer_tag: str):
-    """Search last 100 messages in #pr-city for a message containing footer_tag, then delete it."""
+def _find_and_delete_bot_message(display_name: str, match_text: str):
+    """Search last 100 messages for a bot message containing display_name and match_text, then delete it."""
     token = _get_bot_token()
     if not token:
+        return
+    bot_id = _get_bot_user_id()
+    if not bot_id:
         return
     try:
         resp = requests.get(
@@ -91,7 +112,11 @@ def _search_and_delete_message(footer_tag: str):
         if resp.status_code != 200:
             return
         for msg in resp.json():
-            if footer_tag in msg.get("content", ""):
+            author = msg.get("author", {})
+            if author.get("id") != bot_id:
+                continue
+            content = msg.get("content", "")
+            if display_name in content and match_text in content:
                 requests.delete(
                     f"https://discord.com/api/v10/channels/{CHANNEL_ID}/messages/{msg['id']}",
                     headers={"Authorization": f"Bot {token}"},
@@ -104,16 +129,15 @@ def _search_and_delete_message(footer_tag: str):
 
 def post_core_foods_notification(db: Session, user_id: str, date: str, checked: bool):
     """Post or delete a core foods notification in #pr-city."""
-    footer_tag = f"[cf:{user_id}:{date}]"
+    name = _get_display_name(db, user_id)
     if checked:
-        name = _get_display_name(db, user_id)
         time_ref = _get_time_ref(date)
-        content = f"{name} ate their core foods {time_ref}\n\u200B\n||{footer_tag}||"
+        content = f"{name} ate their core foods {time_ref}"
         msg_id = _post_message(content)
         if msg_id:
             _react_to_message(msg_id, "\U0001f34e")  # 🍎
     else:
-        _search_and_delete_message(footer_tag)
+        _find_and_delete_bot_message(name, "ate their core foods")
 
 
 def post_pr_notification(db: Session, user_id: str, exercise: str, old_1rm: float, new_1rm: float):
