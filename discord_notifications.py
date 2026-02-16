@@ -61,6 +61,21 @@ def _post_message(content: str) -> str | None:
     return None
 
 
+def _react_to_message(message_id: str, emoji: str):
+    """Add a reaction to a message in #pr-city."""
+    token = _get_bot_token()
+    if not token or not message_id:
+        return
+    try:
+        requests.put(
+            f"https://discord.com/api/v10/channels/{CHANNEL_ID}/messages/{message_id}/reactions/{emoji}/@me",
+            headers={"Authorization": f"Bot {token}"},
+            timeout=5,
+        )
+    except Exception:
+        pass
+
+
 def _search_and_delete_message(footer_tag: str):
     """Search last 100 messages in #pr-city for a message containing footer_tag, then delete it."""
     token = _get_bot_token()
@@ -94,7 +109,9 @@ def post_core_foods_notification(db: Session, user_id: str, date: str, checked: 
         name = _get_display_name(db, user_id)
         time_ref = _get_time_ref(date)
         content = f"{name} ate their core foods {time_ref}\n\u200B\n||{footer_tag}||"
-        _post_message(content)
+        msg_id = _post_message(content)
+        if msg_id:
+            _react_to_message(msg_id, "\U0001f34e")  # 🍎
     else:
         _search_and_delete_message(footer_tag)
 
@@ -108,4 +125,6 @@ def post_pr_notification(db: Session, user_id: str, exercise: str, old_1rm: floa
         return
     name = _get_display_name(db, user_id)
     content = f"{name} just beat their last personal best on {exercise} by {improvement:.1f}%"
-    _post_message(content)
+    msg_id = _post_message(content)
+    if msg_id:
+        _react_to_message(msg_id, "\U0001f4aa")  # 💪
