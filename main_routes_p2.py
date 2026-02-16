@@ -28,7 +28,7 @@ from main_routes import (
     _format_pr, _find_all_matching_names, _build_best_prs_for_workouts,
     calculate_1rm, _normalize_exercise_key, award_xp_internal
 )
-from discord_notifications import post_core_foods_notification, post_pr_notification, test_discord_post
+from discord_notifications import post_core_foods_notification, post_pr_notification
 
 router = APIRouter()
 
@@ -349,14 +349,6 @@ def admin_config(key: str = ""):
     if key != ADMIN_KEY:
         raise HTTPException(status_code=403, detail="Invalid admin key")
     return {"bot_token": os.environ.get("TTM_BOT_TOKEN", ""), "admin_key": ADMIN_KEY}
-
-
-@router.get("/api/admin/test-discord", tags=["Admin"])
-def admin_test_discord(key: str = ""):
-    ADMIN_KEY = os.environ.get("ADMIN_KEY", "4ifQC_DLzlXM1c5PC6egwvf2p5GgbMR3")
-    if key != ADMIN_KEY:
-        raise HTTPException(status_code=403, detail="Invalid admin key")
-    return test_discord_post()
 
 
 @router.get("/api/admin/sql", tags=["Admin"])
