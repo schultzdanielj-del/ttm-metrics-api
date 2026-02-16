@@ -109,20 +109,3 @@ def post_pr_notification(db: Session, user_id: str, exercise: str, old_1rm: floa
     name = _get_display_name(db, user_id)
     content = f"{name} just beat their last personal best on {exercise} by {improvement:.1f}%"
     _post_message(content)
-
-
-def test_discord_post() -> dict:
-    """Debug function: attempt to post a test message and return full details."""
-    token = _get_bot_token()
-    if not token:
-        return {"error": "no bot token", "token_length": 0}
-    try:
-        resp = requests.post(
-            f"https://discord.com/api/v10/channels/{CHANNEL_ID}/messages",
-            headers={"Authorization": f"Bot {token}", "Content-Type": "application/json"},
-            json={"content": "test notification - delete me"},
-            timeout=10,
-        )
-        return {"status_code": resp.status_code, "response": resp.text[:500], "token_length": len(token)}
-    except Exception as e:
-        return {"error": str(e), "token_length": len(token)}
