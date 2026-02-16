@@ -273,7 +273,7 @@ def get_full_dashboard(unique_code: str, db: Session = Depends(get_db)):
     # Build session_prs: for each active session, find exercises where the all-time best PR was set during the session window
     session_prs = {}
     for letter, sess_info in sessions.items():
-        sess_opened = datetime.fromisoformat(sess_info["opened_at"])
+        sess_opened = datetime.fromisoformat(sess_info["opened_at"]) - timedelta(seconds=1)
         sess_end = sess_opened + timedelta(hours=96)
         if letter not in workouts:
             continue
