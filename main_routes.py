@@ -32,7 +32,7 @@ router = APIRouter()
 
 @router.get("/")
 def root():
-    return {"status": "healthy", "service": "TTM Metrics API", "version": "1.5.7"}
+    return {"status": "healthy", "service": "TTM Metrics API", "version": "1.5.8"}
 
 
 _STRIP_WORDS = {
@@ -92,22 +92,11 @@ def _exercise_similarity(name_a: str, name_b: str) -> float:
 
 
 def _find_all_matching_names(db: Session, user_id: str, exercise_name: str) -> List[str]:
-    all_pr_exercises = db.query(PR.exercise).filter(PR.user_id == user_id).distinct().all()
-    pr_names = [name for (name,) in all_pr_exercises]
-    if not pr_names:
-        return []
-    target_nk = _normalize_exercise_key(exercise_name)
-    matched = set()
-    for pr_name in pr_names:
-        if pr_name == exercise_name:
-            matched.add(pr_name)
-            continue
-        if _normalize_exercise_key(pr_name) == target_nk:
-            matched.add(pr_name)
-            continue
-        if _exercise_similarity(exercise_name, pr_name) >= 0.7:
-            matched.add(pr_name)
-    return list(matched)
+    """Exact match only. All PR exercise names are canonical as of session 14."""
+    exists = db.query(PR.exercise).filter(
+        PR.user_id == user_id, PR.exercise == exercise_name
+    ).first()
+    return [exercise_name] if exists else []
 
 
 def calculate_1rm(weight: float, reps: int) -> float:
@@ -143,10 +132,9 @@ def _format_pr(pr) -> str:
 
 
 def _find_best_pr_match(db: Session, user_id: str, workout_exercise_name: str):
-    matching_names = _find_all_matching_names(db, user_id, workout_exercise_name)
-    if not matching_names:
-        return None, None
-    best = _get_best_pr_across_names(db, user_id, matching_names)
+    best = db.query(PR).filter(
+        PR.user_id == user_id, PR.exercise == workout_exercise_name
+    ).order_by(PR.estimated_1rm.desc()).first()
     if best:
         return best, best.exercise
     return None, None
@@ -159,11 +147,11 @@ def _build_best_prs_for_workouts(db: Session, user_id: str, workouts: dict) -> d
             workout_name = ex["name"]
             if workout_name in best_prs:
                 continue
-            matching_names = _find_all_matching_names(db, user_id, workout_name)
-            if matching_names:
-                best = _get_best_pr_across_names(db, user_id, matching_names)
-                if best:
-                    best_prs[workout_name] = _format_pr(best)
+            best = db.query(PR).filter(
+                PR.user_id == user_id, PR.exercise == workout_name
+            ).order_by(PR.estimated_1rm.desc()).first()
+            if best:
+                best_prs[workout_name] = _format_pr(best)
     return best_prs
 
 
