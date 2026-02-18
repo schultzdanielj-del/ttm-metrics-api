@@ -13,7 +13,7 @@ from database import (
     get_db, PR, Workout, WorkoutCompletion, UserXP,
     DashboardMember, CoreFoodsLog as CoreFoodsLogModel, WeeklyLog,
     CoreFoodsCheckin, UserNote, ExerciseSwap, WorkoutSession,
-    SessionLocal
+    CoachMessage, SessionLocal
 )
 from schemas import (
     PRCreate, PRResponse, BestPRResponse,

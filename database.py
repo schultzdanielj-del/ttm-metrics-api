@@ -152,7 +152,7 @@ class WorkoutSession(Base):
 
 
 class CoachMessage(Base):
-    """Two-way coach messaging between Dan and users"""
+    """Two-way coach messaging between Dan and each user"""
     __tablename__ = "coach_messages"
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(String, index=True, nullable=False)

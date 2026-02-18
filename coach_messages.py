@@ -1,13 +1,12 @@
 """
 TTM Metrics API - Coach Messaging Routes
-Two-way text messaging between coach (Dan) and users.
+Two-way text messaging between coach (Dan) and each dashboard user.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.orm import Session
-from sqlalchemy import and_
+from sqlalchemy import asc
 from datetime import datetime
-from typing import Optional
 import os
 import requests as req
 
@@ -16,7 +15,17 @@ from database import get_db, CoachMessage, DashboardMember
 router = APIRouter()
 
 COACH_DISCORD_ID = "718992882182258769"
-MESSAGE_CAP = 10
+
+
+def get_coach_messages_for_user(db: Session, user_id: str) -> list:
+    """Called by /full endpoint to include coach messages in dashboard payload."""
+    messages = (
+        db.query(CoachMessage)
+        .filter(CoachMessage.user_id == user_id)
+        .order_by(asc(CoachMessage.created_at))
+        .all()
+    )
+    return [_format_message(m) for m in messages]
 
 
 def _resolve_member(unique_code: str, db: Session) -> DashboardMember:
@@ -26,14 +35,18 @@ def _resolve_member(unique_code: str, db: Session) -> DashboardMember:
     return member
 
 
-def _enforce_message_cap(db: Session, user_id: str):
-    """Keep max MESSAGE_CAP messages per user. Delete oldest if over."""
+def _enforce_cap(db: Session, user_id: str, cap: int = 10):
+    """Delete oldest messages for user if count exceeds cap."""
     count = db.query(CoachMessage).filter(CoachMessage.user_id == user_id).count()
-    if count >= MESSAGE_CAP:
-        excess = count - MESSAGE_CAP + 1
-        oldest = db.query(CoachMessage).filter(
-            CoachMessage.user_id == user_id
-        ).order_by(CoachMessage.created_at.asc()).limit(excess).all()
+    if count >= cap:
+        overflow = count - cap + 1  # make room for the new one
+        oldest = (
+            db.query(CoachMessage)
+            .filter(CoachMessage.user_id == user_id)
+            .order_by(asc(CoachMessage.created_at))
+            .limit(overflow)
+            .all()
+        )
         for msg in oldest:
             db.delete(msg)
         db.flush()
@@ -47,20 +60,19 @@ def _format_message(msg: CoachMessage) -> dict:
         "from_coach": msg.from_coach,
         "discord_msg_id": msg.discord_msg_id,
         "created_at": msg.created_at.isoformat(),
-        "audio_duration": msg.audio_duration,
     }
 
 
-def _send_dm_to_coach(display_name: str, message_text: str):
-    """Send a DM to Dan when a user replies from the dashboard."""
-    bot_token = os.environ.get("TTM_BOT_TOKEN", "")
-    if not bot_token:
+def send_dm_to_coach(display_name: str, message_text: str):
+    """Send a DM to Dan's Discord when a user replies from the dashboard."""
+    token = os.environ.get("TTM_BOT_TOKEN", "")
+    if not token:
         return
     try:
         # Open/get DM channel with coach
         resp = req.post(
             "https://discord.com/api/v10/users/@me/channels",
-            headers={"Authorization": f"Bot {bot_token}", "Content-Type": "application/json"},
+            headers={"Authorization": f"Bot {token}", "Content-Type": "application/json"},
             json={"recipient_id": COACH_DISCORD_ID},
             timeout=5,
         )
@@ -72,7 +84,7 @@ def _send_dm_to_coach(display_name: str, message_text: str):
         # Send the message
         req.post(
             f"https://discord.com/api/v10/channels/{dm_channel_id}/messages",
-            headers={"Authorization": f"Bot {bot_token}", "Content-Type": "application/json"},
+            headers={"Authorization": f"Bot {token}", "Content-Type": "application/json"},
             json={"content": f"**{display_name}**: {message_text}"},
             timeout=5,
         )
@@ -80,22 +92,14 @@ def _send_dm_to_coach(display_name: str, message_text: str):
         pass
 
 
-def get_coach_messages_for_user(db: Session, user_id: str) -> list:
-    """Get all coach messages for a user, oldest first. Used by /full endpoint."""
-    messages = db.query(CoachMessage).filter(
-        CoachMessage.user_id == user_id
-    ).order_by(CoachMessage.created_at.asc()).all()
-    return [_format_message(m) for m in messages]
-
-
 # ============================================================================
-# Bot → DB: Coach sends a message (from Discord reply)
+# Bot -> DB: Coach sends a message (called by Discord bot)
 # ============================================================================
 
 @router.post("/api/coach-messages", tags=["Coach Messages"])
-def create_coach_message(body: dict, admin_key: Optional[str] = Header(None, alias="X-Admin-Key")):
+def create_coach_message(body: dict, x_admin_key: str = Header(None), db: Session = Depends(get_db)):
     ADMIN_KEY = os.environ.get("ADMIN_KEY", "4ifQC_DLzlXM1c5PC6egwvf2p5GgbMR3")
-    if admin_key != ADMIN_KEY:
+    if x_admin_key != ADMIN_KEY:
         raise HTTPException(status_code=403, detail="Invalid admin key")
 
     user_id = body.get("user_id")
@@ -105,34 +109,32 @@ def create_coach_message(body: dict, admin_key: Optional[str] = Header(None, ali
     if not user_id or not message_text:
         raise HTTPException(status_code=400, detail="user_id and message_text required")
 
-    db = next(get_db())
-    try:
-        _enforce_message_cap(db, user_id)
-        msg = CoachMessage(
-            user_id=user_id,
-            message_text=message_text,
-            from_coach=True,
-            discord_msg_id=discord_msg_id,
-            created_at=datetime.utcnow(),
-        )
-        db.add(msg)
-        db.commit()
-        db.refresh(msg)
-        return _format_message(msg)
-    finally:
-        db.close()
+    _enforce_cap(db, user_id)
+    msg = CoachMessage(
+        user_id=user_id,
+        message_text=message_text,
+        from_coach=True,
+        discord_msg_id=discord_msg_id,
+        created_at=datetime.utcnow(),
+    )
+    db.add(msg)
+    db.commit()
+    return {"status": "created", "id": msg.id}
 
 
 # ============================================================================
-# Dashboard reads messages
+# Dashboard reads coach messages
 # ============================================================================
 
 @router.get("/api/dashboard/{unique_code}/coach-messages", tags=["Coach Messages"])
 def get_coach_messages(unique_code: str, db: Session = Depends(get_db)):
     member = _resolve_member(unique_code, db)
-    messages = db.query(CoachMessage).filter(
-        CoachMessage.user_id == member.user_id
-    ).order_by(CoachMessage.created_at.asc()).all()
+    messages = (
+        db.query(CoachMessage)
+        .filter(CoachMessage.user_id == member.user_id)
+        .order_by(asc(CoachMessage.created_at))
+        .all()
+    )
     return [_format_message(m) for m in messages]
 
 
@@ -147,7 +149,7 @@ def reply_to_coach(unique_code: str, body: dict, db: Session = Depends(get_db)):
     if not message_text:
         raise HTTPException(status_code=400, detail="message_text required")
 
-    _enforce_message_cap(db, member.user_id)
+    _enforce_cap(db, member.user_id)
     msg = CoachMessage(
         user_id=member.user_id,
         message_text=message_text,
@@ -156,10 +158,9 @@ def reply_to_coach(unique_code: str, body: dict, db: Session = Depends(get_db)):
     )
     db.add(msg)
     db.commit()
-    db.refresh(msg)
 
-    # Send DM to Dan
+    # Send DM to coach
     display_name = member.full_name or member.username or "Someone"
-    _send_dm_to_coach(display_name, message_text)
+    send_dm_to_coach(display_name, message_text)
 
     return _format_message(msg)
