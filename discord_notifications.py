@@ -160,3 +160,24 @@ def delete_pr_notification(db: Session, user_id: str, exercise: str):
     """Delete a PR notification from #pr-city when a re-log undoes a PR."""
     name = _get_display_name(db, user_id)
     _find_and_delete_bot_message(name, f"personal best on {exercise}")
+
+
+def post_workout_completion_notification(db: Session, user_id: str, letter: str):
+    """Post a workout completion notification in #pr-city."""
+    name = _get_display_name(db, user_id)
+    content = f"{name} just finished Workout {letter}"
+    msg_id = _post_message(content)
+    if msg_id:
+        _react_to_message(msg_id, "\U0001f3cb\ufe0f")  # 🏋️
+
+
+def post_deload_notification(db: Session, user_id: str, strength_pct: float = None):
+    """Post a deload notification in #pr-city when a user completes a training cycle."""
+    name = _get_display_name(db, user_id)
+    if strength_pct is not None and strength_pct > 0:
+        content = f"{name} has finished a training cycle and got {strength_pct:.1f}% stronger, time for a well deserved break"
+    else:
+        content = f"{name} has finished a training cycle and earned a well deserved break"
+    msg_id = _post_message(content)
+    if msg_id:
+        _react_to_message(msg_id, "\U0001f9d8")  # 🧘

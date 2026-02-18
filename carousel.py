@@ -12,6 +12,10 @@ from typing import Optional
 from database import (
     get_db, CycleState, WorkoutCompletion, Workout, PR, DashboardMember
 )
+from discord_notifications import (
+    post_workout_completion_notification,
+    post_deload_notification,
+)
 
 router = APIRouter()
 
@@ -253,6 +257,11 @@ def advance_carousel(unique_code: str, req: AdvanceRequest, db: Session = Depend
     current_letter = letters[state.current_position % num]
     now = datetime.utcnow()
 
+    # Track what happened for notifications
+    completed_letter = current_letter
+    entered_deload = False
+    cycle_reset = False
+
     if not state.deload_mode:
         # Normal mode: increment completion for current letter
         _increment_completion(db, uid, current_letter)
@@ -262,6 +271,7 @@ def advance_carousel(unique_code: str, req: AdvanceRequest, db: Session = Depend
         all_complete = all(completions[l] >= COMPLETIONS_PER_LETTER for l in letters)
         if all_complete:
             state.deload_mode = True
+            entered_deload = True
             # Reset completions — they'll be used to track deload passes
             _reset_completions(db, uid)
             db.commit()
@@ -277,6 +287,7 @@ def advance_carousel(unique_code: str, req: AdvanceRequest, db: Session = Depend
             state.deload_mode = False
             state.cycle_number += 1
             state.cycle_started_at = now
+            cycle_reset = True
             _reset_completions(db, uid)
             # Position resets to 0 (will be set below after advance)
             # Actually we want next position to be 0, so set to -1 before the +1 below
@@ -288,7 +299,24 @@ def advance_carousel(unique_code: str, req: AdvanceRequest, db: Session = Depend
     state.position_started_at = now
     db.commit()
 
-    # TODO Phase 3: Fire Discord notification here (workout completion / deload)
+    # Fire Discord notifications (fire-and-forget, failures don't affect response)
+    try:
+        if entered_deload:
+            # The advance that completed the cycle — post both workout completion and deload
+            post_workout_completion_notification(db, uid, completed_letter)
+            post_deload_notification(db, uid)
+        elif not state.deload_mode and not cycle_reset:
+            # Normal advance (not in deload, not just exiting deload) — post workout completion
+            post_workout_completion_notification(db, uid, completed_letter)
+        # During deload advances or cycle reset advance: no workout notification
+    except Exception:
+        pass  # Notifications are best-effort
 
     carousel = build_carousel_state(db, uid)
-    return {"success": True, "reason": req.reason, "carousel": carousel}
+    return {
+        "success": True,
+        "reason": req.reason,
+        "carousel": carousel,
+        "entered_deload": entered_deload,
+        "cycle_reset": cycle_reset,
+    }
