@@ -97,6 +97,7 @@ def dashboard_log_exercise(unique_code: str, body: dict, db: Session = Depends(g
     weight = float(body.get("weight", 0))
     reps = int(body.get("reps", 0))
     workout_letter = body.get("workout_letter", "")
+    slot_index = body.get("slot_index")  # which input slot on the dashboard (0, 1, 2...)
     if not exercise or reps <= 0:
         raise HTTPException(status_code=400, detail="exercise and reps required")
     estimated_1rm = calculate_1rm(weight, reps)
@@ -107,6 +108,10 @@ def dashboard_log_exercise(unique_code: str, body: dict, db: Session = Depends(g
         if existing:
             store_as = existing.exercise
 
+    # Build message_id with slot info for dashboard logs
+    slot_tag = f"slot{slot_index}-" if slot_index is not None else ""
+    msg_id = f"dashboard-{slot_tag}{datetime.utcnow().isoformat()}"
+
     # Find active session
     now = datetime.utcnow()
     session = db.query(WorkoutSession).filter(WorkoutSession.user_id == member.user_id, WorkoutSession.workout_letter == workout_letter).first()
@@ -114,15 +119,19 @@ def dashboard_log_exercise(unique_code: str, body: dict, db: Session = Depends(g
     if session and (now - session.opened_at).total_seconds() < 96 * 3600:
         session_opened = session.opened_at
     
-    # Delete any existing PR row for this exercise within the current session
+    # Delete any existing PR row for this exercise+slot within the current session
     prev_in_session = None
     if session_opened:
-        prev_in_session = db.query(PR).filter(
+        q = db.query(PR).filter(
             PR.user_id == member.user_id,
             PR.exercise == store_as,
             PR.timestamp >= session_opened,
             PR.channel_id == "dashboard"
-        ).first()
+        )
+        # If slot_index provided, only overwrite the same slot
+        if slot_index is not None:
+            q = q.filter(PR.message_id.like(f"dashboard-slot{slot_index}-%"))
+        prev_in_session = q.first()
         if prev_in_session:
             db.delete(prev_in_session)
             db.flush()
@@ -134,7 +143,7 @@ def dashboard_log_exercise(unique_code: str, body: dict, db: Session = Depends(g
     is_pr = (estimated_1rm > best.estimated_1rm if weight > 0 else reps > best.reps) if best else True
 
     # Insert new PR row
-    new_pr = PR(user_id=member.user_id, username=member.username, exercise=store_as, weight=weight, reps=reps, estimated_1rm=estimated_1rm, message_id=f"dashboard-{datetime.utcnow().isoformat()}", channel_id="dashboard", timestamp=datetime.utcnow())
+    new_pr = PR(user_id=member.user_id, username=member.username, exercise=store_as, weight=weight, reps=reps, estimated_1rm=estimated_1rm, message_id=msg_id, channel_id="dashboard", timestamp=datetime.utcnow())
     db.add(new_pr)
 
     # Update session
