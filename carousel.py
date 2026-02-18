@@ -126,6 +126,68 @@ def _reset_completions(db: Session, user_id: str):
 
 
 # ============================================================================
+# Helper: calculate strength gains for current cycle
+# ============================================================================
+
+def calculate_strength_gains(db: Session, user_id: str) -> dict | None:
+    """
+    For each exercise with 2+ PR logs in the current cycle,
+    compare earliest vs latest estimated_1rm.
+    Returns { exercises: [{name, first_1rm, latest_1rm, change_pct}], avg_change_pct }
+    or None if no meaningful data.
+    """
+    state = db.query(CycleState).filter(CycleState.user_id == user_id).first()
+    if not state:
+        return None
+
+    cycle_start = state.cycle_started_at
+
+    # Get all PRs in current cycle
+    cycle_prs = db.query(PR).filter(
+        PR.user_id == user_id,
+        PR.timestamp >= cycle_start,
+    ).order_by(PR.timestamp.asc()).all()
+
+    if not cycle_prs:
+        return None
+
+    # Group by exercise
+    by_exercise = {}
+    for pr in cycle_prs:
+        if pr.exercise not in by_exercise:
+            by_exercise[pr.exercise] = []
+        by_exercise[pr.exercise].append(pr)
+
+    exercises = []
+    for ex_name, prs in by_exercise.items():
+        if len(prs) < 2:
+            continue
+        first_1rm = prs[0].estimated_1rm
+        latest_1rm = prs[-1].estimated_1rm
+        if first_1rm <= 0:
+            continue
+        change_pct = ((latest_1rm - first_1rm) / first_1rm) * 100
+        exercises.append({
+            "name": ex_name,
+            "first_1rm": round(first_1rm, 1),
+            "latest_1rm": round(latest_1rm, 1),
+            "change_pct": round(change_pct, 1),
+        })
+
+    if not exercises:
+        return None
+
+    avg_change = sum(e["change_pct"] for e in exercises) / len(exercises)
+    # Sort by change_pct descending (biggest gains first)
+    exercises.sort(key=lambda e: e["change_pct"], reverse=True)
+
+    return {
+        "exercises": exercises,
+        "avg_change_pct": round(avg_change, 1),
+    }
+
+
+# ============================================================================
 # Helper: build carousel response object
 # ============================================================================
 
@@ -304,7 +366,10 @@ def advance_carousel(unique_code: str, req: AdvanceRequest, db: Session = Depend
         if entered_deload:
             # The advance that completed the cycle — post both workout completion and deload
             post_workout_completion_notification(db, uid, completed_letter)
-            post_deload_notification(db, uid)
+            # Calculate strength gains for the deload notification
+            gains = calculate_strength_gains(db, uid)
+            avg_pct = gains["avg_change_pct"] if gains else None
+            post_deload_notification(db, uid, strength_pct=avg_pct)
         elif not state.deload_mode and not cycle_reset:
             # Normal advance (not in deload, not just exiting deload) — post workout completion
             post_workout_completion_notification(db, uid, completed_letter)

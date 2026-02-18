@@ -15,7 +15,7 @@ from database import (
     CoreFoodsCheckin, UserNote, ExerciseSwap, WorkoutSession,
     CoachMessage, SessionLocal
 )
-from carousel import build_carousel_state, check_inactivity_reset, _get_workout_letters
+from carousel import build_carousel_state, check_inactivity_reset, _get_workout_letters, calculate_strength_gains
 from schemas import (
     PRCreate, PRResponse, BestPRResponse,
     WorkoutPlanCreate, WorkoutCompletionUpdate, DeloadStatus,
@@ -350,7 +350,10 @@ def get_full_dashboard(unique_code: str, db: Session = Depends(get_db)):
     check_inactivity_reset(db, uid, carousel_letters)
     carousel = build_carousel_state(db, uid)
 
-    return {"username": member.username, "full_name": member.full_name, "workouts": workouts, "best_prs": best_prs, "deload": deload, "last_workout_dates": last_workout_dates, "core_foods": core_foods, "notes": notes, "swaps": swaps, "sessions": sessions, "session_prs": session_prs, "coach_messages": coach_messages, "carousel": carousel}
+    # Strength gains for current cycle
+    strength_gains = calculate_strength_gains(db, uid)
+
+    return {"username": member.username, "full_name": member.full_name, "workouts": workouts, "best_prs": best_prs, "deload": deload, "last_workout_dates": last_workout_dates, "core_foods": core_foods, "notes": notes, "swaps": swaps, "sessions": sessions, "session_prs": session_prs, "coach_messages": coach_messages, "carousel": carousel, "strength_gains": strength_gains}
 
 
 @router.post("/api/weekly-logs", tags=["Weekly Logs"])
