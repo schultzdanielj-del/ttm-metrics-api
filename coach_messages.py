@@ -123,6 +123,29 @@ def create_coach_message(body: dict, x_admin_key: str = Header(None), db: Sessio
 
 
 # ============================================================================
+# Bot -> DB: Update a coach message (called by Discord bot on message edit)
+# ============================================================================
+
+@router.put("/api/coach-messages/{discord_msg_id}", tags=["Coach Messages"])
+def update_coach_message(discord_msg_id: str, body: dict, x_admin_key: str = Header(None), db: Session = Depends(get_db)):
+    ADMIN_KEY = os.environ.get("ADMIN_KEY", "4ifQC_DLzlXM1c5PC6egwvf2p5GgbMR3")
+    if x_admin_key != ADMIN_KEY:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+
+    message_text = body.get("message_text")
+    if not message_text:
+        raise HTTPException(status_code=400, detail="message_text required")
+
+    msg = db.query(CoachMessage).filter(CoachMessage.discord_msg_id == discord_msg_id).first()
+    if not msg:
+        raise HTTPException(status_code=404, detail="Coach message not found")
+
+    msg.message_text = message_text
+    db.commit()
+    return {"status": "updated", "id": msg.id}
+
+
+# ============================================================================
 # Dashboard reads coach messages
 # ============================================================================
 
