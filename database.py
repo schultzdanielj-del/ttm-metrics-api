@@ -151,6 +151,18 @@ class WorkoutSession(Base):
     log_count = Column(Integer, default=0, nullable=False)
 
 
+class CycleState(Base):
+    """Per-user carousel/cycle state — one row per user"""
+    __tablename__ = "cycle_state"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, unique=True, index=True, nullable=False)
+    current_position = Column(Integer, nullable=False, default=0)
+    position_started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    deload_mode = Column(Boolean, nullable=False, default=False)
+    cycle_started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    cycle_number = Column(Integer, nullable=False, default=1)
+
+
 class CoachMessage(Base):
     """Two-way coach messaging between Dan and each user"""
     __tablename__ = "coach_messages"

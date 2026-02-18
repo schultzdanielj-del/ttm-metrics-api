@@ -13,6 +13,7 @@ from admin_core_foods import router as admin_core_foods_router
 from main_routes import router as main_routes_router
 from main_routes_p2 import router as main_routes_p2_router
 from coach_messages import router as coach_messages_router
+from carousel import router as carousel_router
 
 app = FastAPI(
     title="TTM Metrics API",
@@ -34,6 +35,7 @@ app.include_router(admin_core_foods_router)
 app.include_router(main_routes_router)
 app.include_router(main_routes_p2_router)
 app.include_router(coach_messages_router)
+app.include_router(carousel_router)
 
 
 @app.on_event("startup")
