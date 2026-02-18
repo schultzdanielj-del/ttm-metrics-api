@@ -453,6 +453,28 @@ def admin_sql(key: str = "", q: str = "", db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.post("/api/admin/sql", tags=["Admin"])
+def admin_sql_write(key: str = "", q: str = "", db: Session = Depends(get_db)):
+    ADMIN_KEY = os.environ.get("ADMIN_KEY", "4ifQC_DLzlXM1c5PC6egwvf2p5GgbMR3")
+    if key != ADMIN_KEY:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    if not q.strip():
+        raise HTTPException(status_code=400, detail="Query required")
+    stmt = q.strip().lower()
+    if stmt.startswith("select"):
+        raise HTTPException(status_code=400, detail="Use GET for SELECT queries")
+    if not (stmt.startswith("update") or stmt.startswith("delete") or stmt.startswith("insert")):
+        raise HTTPException(status_code=400, detail="Only UPDATE/DELETE/INSERT allowed")
+    from sqlalchemy import text
+    try:
+        result = db.execute(text(q))
+        db.commit()
+        return {"success": True, "rows_affected": result.rowcount}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.get("/api/admin/rescrape", tags=["Admin"])
 def admin_rescrape(key: str = "", db: Session = Depends(get_db)):
     import requests as req
