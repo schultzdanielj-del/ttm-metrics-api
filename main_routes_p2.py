@@ -59,13 +59,6 @@ def get_dashboard_best_prs(unique_code: str, db: Session = Depends(get_db)):
     return result
 
 
-@router.get("/api/dashboard/{unique_code}/deload-status", tags=["Dashboard"])
-def get_dashboard_deload_status(unique_code: str, db: Session = Depends(get_db)):
-    member = _resolve_member(unique_code, db)
-    completions = db.query(WorkoutCompletion).filter(WorkoutCompletion.user_id == member.user_id).all()
-    return {c.workout_letter: c.completion_count for c in completions}
-
-
 @router.get("/api/dashboard/{unique_code}/core-foods", tags=["Dashboard"])
 def get_dashboard_core_foods(unique_code: str, db: Session = Depends(get_db)):
     member = _resolve_member(unique_code, db)
@@ -296,7 +289,6 @@ def get_full_dashboard(unique_code: str, db: Session = Depends(get_db)):
         workouts[ex.workout_letter].append({"name": ex.exercise_name, "special_logging": ex.special_logging, "setup_notes": ex.setup_notes, "video_link": ex.video_link})
     best_prs = _build_best_prs_for_workouts(db, uid, workouts)
     completions = db.query(WorkoutCompletion).filter(WorkoutCompletion.user_id == uid).all()
-    deload = {c.workout_letter: c.completion_count for c in completions}
     last_workout_dates = {}
     for c in completions:
         if c.last_workout_date:
@@ -353,7 +345,7 @@ def get_full_dashboard(unique_code: str, db: Session = Depends(get_db)):
     # Strength gains for current cycle
     strength_gains = calculate_strength_gains(db, uid)
 
-    return {"username": member.username, "full_name": member.full_name, "workouts": workouts, "best_prs": best_prs, "deload": deload, "last_workout_dates": last_workout_dates, "core_foods": core_foods, "notes": notes, "swaps": swaps, "sessions": sessions, "session_prs": session_prs, "coach_messages": coach_messages, "carousel": carousel, "strength_gains": strength_gains}
+    return {"username": member.username, "full_name": member.full_name, "workouts": workouts, "best_prs": best_prs, "last_workout_dates": last_workout_dates, "core_foods": core_foods, "notes": notes, "swaps": swaps, "sessions": sessions, "session_prs": session_prs, "coach_messages": coach_messages, "carousel": carousel, "strength_gains": strength_gains}
 
 
 @router.post("/api/weekly-logs", tags=["Weekly Logs"])
