@@ -12,11 +12,12 @@ from admin_rebuild import router as admin_rebuild_router
 from admin_core_foods import router as admin_core_foods_router
 from main_routes import router as main_routes_router
 from main_routes_p2 import router as main_routes_p2_router
+from coach_messages import router as coach_messages_router
 
 app = FastAPI(
     title="TTM Metrics API",
     description="Three Target Method - Fitness tracking and gamification API",
-    version="1.5.7"
+    version="1.6.0"
 )
 
 app.add_middleware(
@@ -32,6 +33,7 @@ app.include_router(admin_rebuild_router)
 app.include_router(admin_core_foods_router)
 app.include_router(main_routes_router)
 app.include_router(main_routes_p2_router)
+app.include_router(coach_messages_router)
 
 
 @app.on_event("startup")

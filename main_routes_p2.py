@@ -29,6 +29,7 @@ from main_routes import (
     calculate_1rm, _normalize_exercise_key, award_xp_internal
 )
 from discord_notifications import post_core_foods_notification, post_pr_notification, delete_pr_notification
+from coach_messages import get_coach_messages_for_user
 
 router = APIRouter()
 
@@ -340,7 +341,10 @@ def get_full_dashboard(unique_code: str, db: Session = Depends(get_db)):
                     input_key = f"{letter}:{ex_name}:{idx}"
                     session_prs[input_key] = {"w": "BW" if best.weight == 0 else str(int(best.weight)), "r": str(best.reps)}
 
-    return {"username": member.username, "full_name": member.full_name, "workouts": workouts, "best_prs": best_prs, "deload": deload, "last_workout_dates": last_workout_dates, "core_foods": core_foods, "notes": notes, "swaps": swaps, "sessions": sessions, "session_prs": session_prs}
+    # Coach messages
+    coach_messages = get_coach_messages_for_user(db, uid)
+
+    return {"username": member.username, "full_name": member.full_name, "workouts": workouts, "best_prs": best_prs, "deload": deload, "last_workout_dates": last_workout_dates, "core_foods": core_foods, "notes": notes, "swaps": swaps, "sessions": sessions, "session_prs": session_prs, "coach_messages": coach_messages}
 
 
 @router.post("/api/weekly-logs", tags=["Weekly Logs"])

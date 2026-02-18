@@ -3,7 +3,7 @@ Database models and connection for TTM Metrics API
 Uses PostgreSQL with SQLAlchemy ORM
 """
 
-from sqlalchemy import create_engine, Column, String, Float, Integer, DateTime, Boolean, Text
+from sqlalchemy import create_engine, Column, String, Float, Integer, DateTime, Boolean, Text, LargeBinary
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
@@ -149,6 +149,19 @@ class WorkoutSession(Base):
     workout_letter = Column(String, nullable=False)
     opened_at = Column(DateTime, nullable=False)
     log_count = Column(Integer, default=0, nullable=False)
+
+
+class CoachMessage(Base):
+    """Two-way coach messaging between Dan and users"""
+    __tablename__ = "coach_messages"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, index=True, nullable=False)
+    message_text = Column(Text, nullable=True)
+    audio_data = Column(LargeBinary, nullable=True)
+    audio_duration = Column(Integer, nullable=True)
+    from_coach = Column(Boolean, nullable=False)
+    discord_msg_id = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
 # ============================================================================
