@@ -7,7 +7,7 @@ import os
 import requests
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
-from database import DashboardMember
+from database import DashboardMember, Workout, PR
 
 CHANNEL_ID = "1459000944028028970"
 
@@ -162,13 +162,60 @@ def delete_pr_notification(db: Session, user_id: str, exercise: str):
     _find_and_delete_bot_message(name, f"personal best on {exercise}")
 
 
-def post_workout_completion_notification(db: Session, user_id: str, letter: str):
-    """Post a workout completion notification in #pr-city."""
+def post_workout_completion_notification(db: Session, user_id: str, letter: str, position_started_at=None):
+    """Post a clean sweep notification ONLY if every exercise in the workout got a PR during this session window."""
+    if not position_started_at:
+        return
+    
+    # Get all exercises for this workout letter
+    exercises = db.query(Workout).filter(
+        Workout.user_id == user_id,
+        Workout.workout_letter == letter,
+    ).all()
+    
+    if not exercises:
+        return
+    
+    ex_names = [e.exercise_name for e in exercises]
+    
+    # For each exercise, check if there's a PR logged during the session window
+    # that improved on the previous best (i.e. is_pr was true at log time)
+    # We check: is the best e1RM for this exercise set during or after position_started_at?
+    all_pr = True
+    for ex_name in ex_names:
+        # Get all PRs for this exercise, ordered by timestamp
+        prs = db.query(PR).filter(
+            PR.user_id == user_id,
+            PR.exercise == ex_name,
+        ).order_by(PR.timestamp.asc()).all()
+        
+        # Find PRs logged in this session window
+        session_prs = [p for p in prs if p.timestamp >= position_started_at]
+        if not session_prs:
+            all_pr = False
+            break
+        
+        # Check if the best e1RM in session beats all prior e1RMs
+        prior_prs = [p for p in prs if p.timestamp < position_started_at]
+        if not prior_prs:
+            # First time logging this exercise — not a "beat your best" PR
+            all_pr = False
+            break
+        
+        best_prior = max(p.estimated_1rm for p in prior_prs)
+        best_session = max(p.estimated_1rm for p in session_prs)
+        if best_session <= best_prior:
+            all_pr = False
+            break
+    
+    if not all_pr:
+        return
+    
     name = _get_display_name(db, user_id)
-    content = f"{name} just finished Workout {letter}"
+    content = f"{name} just clean swept Workout {letter} with all personal bests"
     msg_id = _post_message(content)
     if msg_id:
-        _react_to_message(msg_id, "\U0001f3cb\ufe0f")  # 🏋️
+        _react_to_message(msg_id, "\U0001f525")  # 🔥
 
 
 def post_deload_notification(db: Session, user_id: str, strength_pct: float = None):

@@ -356,6 +356,9 @@ def advance_carousel(unique_code: str, req: AdvanceRequest, db: Session = Depend
             state.current_position = -1
             db.commit()
 
+    # Save session start time before advancing (needed for clean sweep check)
+    completed_position_started = state.position_started_at
+
     # Advance position
     state.current_position += 1
     state.position_started_at = now
@@ -364,16 +367,16 @@ def advance_carousel(unique_code: str, req: AdvanceRequest, db: Session = Depend
     # Fire Discord notifications (fire-and-forget, failures don't affect response)
     try:
         if entered_deload:
-            # The advance that completed the cycle — post both workout completion and deload
-            post_workout_completion_notification(db, uid, completed_letter)
+            # The advance that completed the cycle — check for clean sweep + deload notification
+            post_workout_completion_notification(db, uid, completed_letter, position_started_at=completed_position_started)
             # Calculate strength gains for the deload notification
             gains = calculate_strength_gains(db, uid)
             avg_pct = gains["avg_change_pct"] if gains else None
             post_deload_notification(db, uid, strength_pct=avg_pct)
         elif not state.deload_mode and not cycle_reset:
-            # Normal advance (not in deload, not just exiting deload) — post workout completion
-            post_workout_completion_notification(db, uid, completed_letter)
-        # During deload advances or cycle reset advance: no workout notification
+            # Normal advance — check for clean sweep only
+            post_workout_completion_notification(db, uid, completed_letter, position_started_at=completed_position_started)
+        # During deload advances or cycle reset advance: no notification
     except Exception:
         pass  # Notifications are best-effort
 
