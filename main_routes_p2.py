@@ -532,3 +532,20 @@ def admin_rescrape(key: str = "", db: Session = Depends(get_db)):
     db.commit()
     total_after = db.query(func.count(PR.id)).scalar()
     return {"status": "success", "before": total_before, "deleted_discord": deleted, "preserved_manual": manual_count, "messages_fetched": len(all_messages), "inserted": inserted, "after": total_after}
+
+
+@router.get("/api/admin/migrate-force-bw", tags=["Admin"])
+def migrate_force_bw(key: str = "", db: Session = Depends(get_db)):
+    ADMIN_KEY = os.environ.get("ADMIN_KEY", "4ifQC_DLzlXM1c5PC6egwvf2p5GgbMR3")
+    if key != ADMIN_KEY:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    from sqlalchemy import text
+    try:
+        db.execute(text("ALTER TABLE workouts ADD COLUMN force_bw_protocol BOOLEAN NOT NULL DEFAULT false"))
+        db.commit()
+        db.execute(text("UPDATE workouts SET force_bw_protocol = true WHERE exercise_name ILIKE '%glute ham%' OR exercise_name ILIKE '%ghr%'"))
+        db.commit()
+        return {"success": True, "message": "Column added and GHR flagged"}
+    except Exception as e:
+        db.rollback()
+        return {"success": False, "error": str(e)}
