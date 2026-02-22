@@ -43,7 +43,7 @@ def get_dashboard_workouts(unique_code: str, db: Session = Depends(get_db)):
     for ex in exercises:
         if ex.workout_letter not in workouts:
             workouts[ex.workout_letter] = []
-        workouts[ex.workout_letter].append({"name": ex.exercise_name, "special_logging": ex.special_logging, "setup_notes": ex.setup_notes, "video_link": ex.video_link})
+        workouts[ex.workout_letter].append({"name": ex.exercise_name, "special_logging": ex.special_logging, "setup_notes": ex.setup_notes, "video_link": ex.video_link, "force_bw_protocol": ex.force_bw_protocol})
     return {"user_id": member.user_id, "username": member.username, "workouts": workouts}
 
 
@@ -286,7 +286,7 @@ def get_full_dashboard(unique_code: str, db: Session = Depends(get_db)):
     for ex in exercises:
         if ex.workout_letter not in workouts:
             workouts[ex.workout_letter] = []
-        workouts[ex.workout_letter].append({"name": ex.exercise_name, "special_logging": ex.special_logging, "setup_notes": ex.setup_notes, "video_link": ex.video_link})
+        workouts[ex.workout_letter].append({"name": ex.exercise_name, "special_logging": ex.special_logging, "setup_notes": ex.setup_notes, "video_link": ex.video_link, "force_bw_protocol": ex.force_bw_protocol})
     best_prs = _build_best_prs_for_workouts(db, uid, workouts)
     completions = db.query(WorkoutCompletion).filter(WorkoutCompletion.user_id == uid).all()
     last_workout_dates = {}

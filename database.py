@@ -52,6 +52,7 @@ class Workout(Base):
     setup_notes = Column(Text, nullable=True)
     video_link = Column(String, nullable=True)
     special_logging = Column(String, nullable=True)
+    force_bw_protocol = Column(Boolean, nullable=False, server_default="false")
 
 
 class WorkoutCompletion(Base):
