@@ -385,3 +385,54 @@ def advance_carousel(unique_code: str, req: AdvanceRequest, db: Session = Depend
         "entered_deload": entered_deload,
         "cycle_reset": cycle_reset,
     }
+
+
+# ============================================================================
+# Go back endpoint
+# ============================================================================
+
+@router.post("/api/dashboard/{unique_code}/go-back", tags=["Dashboard"])
+def go_back_carousel(unique_code: str, db: Session = Depends(get_db)):
+    """Move carousel back one position. Undoes the last advance."""
+    member = _resolve_member(unique_code, db)
+    uid = member.user_id
+    letters = _get_workout_letters(db, uid)
+
+    if not letters:
+        raise HTTPException(status_code=400, detail="No workouts configured")
+
+    state = _get_or_create_cycle_state(db, uid)
+
+    if state.current_position <= 0:
+        raise HTTPException(status_code=400, detail="Already at the beginning")
+
+    num = len(letters)
+
+    # The letter we're leaving (current) — decrement its completion if we
+    # previously counted it. Actually, the completion was recorded for the
+    # letter we ADVANCED FROM, not the current one. When we advanced from
+    # position N to N+1, position N's letter got a completion bump.
+    # Going back means we undo that: decrement the letter at position N
+    # (which is position current_position - 1 after the advance, i.e. the
+    # letter we're going BACK to).
+    prev_position = state.current_position - 1
+    prev_letter = letters[prev_position % num]
+
+    # Decrement completion for that letter
+    record = db.query(WorkoutCompletion).filter(
+        WorkoutCompletion.user_id == uid,
+        WorkoutCompletion.workout_letter == prev_letter,
+    ).first()
+    if record and record.completion_count > 0:
+        record.completion_count -= 1
+
+    # If we were in deload and going back, exit deload
+    if state.deload_mode:
+        state.deload_mode = False
+
+    state.current_position = prev_position
+    state.position_started_at = datetime.utcnow()
+    db.commit()
+
+    carousel = build_carousel_state(db, uid)
+    return {"success": True, "carousel": carousel}
