@@ -504,3 +504,72 @@ def coach_advance_carousel(user_id: str, db: Session = Depends(get_db), _=Depend
 
     carousel = build_carousel_state(db, user_id)
     return {"success": True, "carousel": carousel}
+
+
+# ============================================================================
+# POST /api/coach/members/{user_id}/move — move carousel position by delta
+# ============================================================================
+
+@router.post("/api/coach/members/{user_id}/move", tags=["Coach"])
+def coach_move_carousel(user_id: str, body: dict, db: Session = Depends(get_db), _=Depends(_require_admin)):
+    """
+    Move a user's carousel position by a delta. Adjusts completion counts accordingly.
+    Body: { "delta": int }  — positive = forward, negative = backward
+    Examples: delta=1 (advance 1), delta=-1 (back 1), delta=5 (full rotation forward), delta=-5 (full rotation back)
+    """
+    member = db.query(DashboardMember).filter(DashboardMember.user_id == user_id).first()
+    if not member:
+        raise HTTPException(status_code=404, detail="Member not found")
+
+    letters = _get_workout_letters(db, user_id)
+    if not letters:
+        raise HTTPException(status_code=400, detail="No workouts configured")
+
+    state = db.query(CycleState).filter(CycleState.user_id == user_id).first()
+    if not state:
+        raise HTTPException(status_code=400, detail="No cycle state found")
+
+    delta = body.get("delta", 0)
+    if delta == 0:
+        carousel = build_carousel_state(db, user_id)
+        return {"success": True, "carousel": carousel}
+
+    num = len(letters)
+
+    if delta > 0:
+        # Moving forward — increment completions for each letter we pass through
+        for i in range(delta):
+            letter = letters[(state.current_position + i) % num]
+            comp = db.query(WorkoutCompletion).filter(
+                WorkoutCompletion.user_id == user_id,
+                WorkoutCompletion.workout_letter == letter,
+            ).first()
+            if comp:
+                comp.completion_count += 1
+            else:
+                db.add(WorkoutCompletion(
+                    user_id=user_id, workout_letter=letter,
+                    completion_count=1, last_workout_date=datetime.utcnow(),
+                ))
+    else:
+        # Moving backward — decrement completions for each letter we back over
+        for i in range(abs(delta)):
+            # Back over the letter at (current_position - 1 - i)
+            back_pos = state.current_position - 1 - i
+            if back_pos < 0:
+                break  # Can't go before position 0
+            letter = letters[back_pos % num]
+            comp = db.query(WorkoutCompletion).filter(
+                WorkoutCompletion.user_id == user_id,
+                WorkoutCompletion.workout_letter == letter,
+            ).first()
+            if comp and comp.completion_count > 0:
+                comp.completion_count -= 1
+
+    new_pos = max(0, state.current_position + delta)
+    state.current_position = new_pos
+    state.position_started_at = datetime.utcnow()
+    db.commit()
+
+    carousel = build_carousel_state(db, user_id)
+    return {"success": True, "carousel": carousel}
