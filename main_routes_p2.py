@@ -29,7 +29,7 @@ from main_routes import (
     _format_pr, _find_all_matching_names, _build_best_prs_for_workouts,
     calculate_1rm, _normalize_exercise_key, award_xp_internal
 )
-from discord_notifications import post_core_foods_notification, post_pr_notification, delete_pr_notification
+from discord_notifications import post_core_foods_notification, post_pr_notification, post_pr_upgrade_notification, delete_pr_notification
 from coach_messages import get_coach_messages_for_user
 
 router = APIRouter()
@@ -135,7 +135,11 @@ def dashboard_log_exercise(unique_code: str, body: dict, db: Session = Depends(g
     all_names = _find_all_matching_names(db, member.user_id, store_as)
     best = _get_best_pr_across_names(db, member.user_id, all_names) if all_names else None
     old_1rm = best.estimated_1rm if best else None
-    is_pr = (estimated_1rm > best.estimated_1rm if weight > 0 else reps > best.reps) if best else True
+    bw_to_weighted = best is not None and best.weight == 0 and weight > 0
+    if bw_to_weighted:
+        is_pr = True  # First weighted entry is always a PR
+    else:
+        is_pr = (estimated_1rm > best.estimated_1rm if weight > 0 else reps > best.reps) if best else True
 
     # Insert new PR row
     new_pr = PR(user_id=member.user_id, username=member.username, exercise=store_as, weight=weight, reps=reps, estimated_1rm=estimated_1rm, message_id=msg_id, channel_id="dashboard", timestamp=datetime.utcnow())
@@ -152,7 +156,9 @@ def dashboard_log_exercise(unique_code: str, body: dict, db: Session = Depends(g
     db.commit()
 
     # Discord notifications
-    if is_pr and old_1rm is not None:
+    if is_pr and bw_to_weighted:
+        post_pr_upgrade_notification(db, member.user_id, store_as)
+    elif is_pr and old_1rm is not None:
         post_pr_notification(db, member.user_id, store_as, old_1rm, estimated_1rm)
     elif not is_pr and prev_in_session is not None:
         # Previous log may have posted a PR notification, clean it up

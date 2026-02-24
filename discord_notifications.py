@@ -156,6 +156,17 @@ def post_pr_notification(db: Session, user_id: str, exercise: str, old_1rm: floa
         _react_to_message(msg_id, "\U0001f4aa")  # 💪
 
 
+def post_pr_upgrade_notification(db: Session, user_id: str, exercise: str):
+    """Post a PR notification when user upgrades from bodyweight to weighted on an exercise."""
+    name = _get_display_name(db, user_id)
+    # Delete any existing PR notification for this exercise first (re-log scenario)
+    _find_and_delete_bot_message(name, f"personal best on {exercise}")
+    content = f"{name} just hit a personal best on {exercise} — upgraded to weighted"
+    msg_id = _post_message(content)
+    if msg_id:
+        _react_to_message(msg_id, "\U0001f4aa")  # 💪
+
+
 def delete_pr_notification(db: Session, user_id: str, exercise: str):
     """Delete a PR notification from #pr-city when a re-log undoes a PR."""
     name = _get_display_name(db, user_id)
