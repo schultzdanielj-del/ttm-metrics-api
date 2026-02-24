@@ -5,7 +5,7 @@ Handles cycle state, workout advancement, deload detection, and inactivity reset
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from datetime import datetime, timedelta
+from datetime import datetime
 from pydantic import BaseModel
 from typing import Optional
 
@@ -19,7 +19,6 @@ from discord_notifications import (
 
 router = APIRouter()
 
-WINDOW_HOURS = 72
 COMPLETIONS_PER_LETTER = 6
 INACTIVITY_DAYS = 7
 
@@ -202,7 +201,6 @@ def build_carousel_state(db: Session, user_id: str) -> dict:
     completions = _get_completions(db, user_id, letters)
 
     current_letter = letters[state.current_position % num]
-    expires_at = state.position_started_at + timedelta(hours=WINDOW_HOURS)
 
     # Build visible workouts: current + up to 2 previous
     visible = []
@@ -230,7 +228,6 @@ def build_carousel_state(db: Session, user_id: str) -> dict:
         "current_position": state.current_position,
         "current_letter": current_letter,
         "position_started_at": state.position_started_at.isoformat() + "Z",
-        "expires_at": expires_at.isoformat() + "Z",
         "deload_mode": state.deload_mode,
         "cycle_number": state.cycle_number,
         "cycle_started_at": state.cycle_started_at.isoformat() + "Z",
