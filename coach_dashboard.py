@@ -130,6 +130,67 @@ def coach_overview(db: Session = Depends(get_db), _=Depends(_require_admin)):
 # GET /api/coach/member/{user_id} — individual deep-dive
 # ============================================================================
 
+def _build_strength_history(db: Session, user_id: str) -> list | None:
+    """
+    Build a time series of composite strength score throughout the current cycle.
+    At each PR log timestamp, recalculate avg e1RM across all exercises (using
+    the best e1RM for each exercise up to that point in the cycle).
+    Returns [{date, composite, pct_from_start}] or None.
+    """
+    state = db.query(CycleState).filter(CycleState.user_id == user_id).first()
+    if not state:
+        return None
+
+    cycle_start = state.cycle_started_at
+
+    cycle_prs = db.query(PR).filter(
+        PR.user_id == user_id,
+        PR.timestamp >= cycle_start,
+    ).order_by(PR.timestamp.asc()).all()
+
+    if len(cycle_prs) < 2:
+        return None
+
+    # Walk through PRs chronologically, tracking best e1RM per exercise
+    best_by_exercise = {}
+    raw_points = []  # (timestamp, composite_avg)
+
+    for pr in cycle_prs:
+        # Update best for this exercise
+        if pr.exercise not in best_by_exercise or pr.estimated_1rm > best_by_exercise[pr.exercise]:
+            best_by_exercise[pr.exercise] = pr.estimated_1rm
+
+        # Only compute composite once we have 2+ exercises
+        if len(best_by_exercise) >= 2:
+            composite = sum(best_by_exercise.values()) / len(best_by_exercise)
+            raw_points.append((pr.timestamp, composite))
+
+    if len(raw_points) < 2:
+        return None
+
+    # Dedupe to one point per date (keep last of each day)
+    by_date = {}
+    for ts, comp in raw_points:
+        day = ts.strftime("%Y-%m-%d")
+        by_date[day] = (ts, comp)
+
+    points = sorted(by_date.values(), key=lambda x: x[0])
+    if len(points) < 2:
+        return None
+
+    baseline = points[0][1]
+    history = []
+    for ts, comp in points:
+        pct = ((comp - baseline) / baseline) * 100 if baseline > 0 else 0
+        history.append({
+            "date": ts.strftime("%Y-%m-%d"),
+            "composite": round(comp, 1),
+            "pct_from_start": round(pct, 1),
+        })
+
+    return history
+
+
 @router.get("/api/coach/member/{user_id}", tags=["Coach"])
 def coach_member_detail(user_id: str, db: Session = Depends(get_db), _=Depends(_require_admin)):
     member = db.query(DashboardMember).filter(DashboardMember.user_id == user_id).first()
@@ -142,6 +203,9 @@ def coach_member_detail(user_id: str, db: Session = Depends(get_db), _=Depends(_
 
     # --- Strength gains ---
     strength_gains = calculate_strength_gains(db, uid)
+
+    # --- Strength history (composite score time series) ---
+    strength_history = _build_strength_history(db, uid)
 
     # --- Recent PRs (last 30) ---
     recent_prs = db.query(PR).filter(PR.user_id == uid).order_by(PR.timestamp.desc()).limit(30).all()
@@ -211,6 +275,7 @@ def coach_member_detail(user_id: str, db: Session = Depends(get_db), _=Depends(_
         "unique_code": member.unique_code,
         "carousel": carousel,
         "strength_gains": strength_gains,
+        "strength_history": strength_history,
         "recent_prs": pr_list,
         "best_prs": best_prs,
         "core_foods_dates": core_foods_dates,
