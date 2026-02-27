@@ -138,18 +138,18 @@ def check_charge_up_decay(db: Session, user_id: str):
 # Bad Day / Higher-Low Detection
 # ============================================================================
 
-def detect_bad_day(session_logs: list, game_states: dict) -> bool:
+def detect_bad_day(session_logs: list, best_e1rms: dict) -> bool:
     """
     Check if multiple exercises in current session are significantly below best.
     session_logs: list of dicts with {exercise, estimated_1rm}
-    game_states: dict keyed by exercise name → GameState objects
+    best_e1rms: dict keyed by exercise name → best e1rm float value
     """
     below_count = 0
     for log in session_logs:
-        gs = game_states.get(log["exercise"])
-        if not gs or not gs.best_e1rm or gs.best_e1rm <= 0:
+        best = best_e1rms.get(log["exercise"])
+        if not best or best <= 0:
             continue
-        ratio = log["estimated_1rm"] / gs.best_e1rm
+        ratio = log["estimated_1rm"] / best
         if ratio < BAD_DAY_THRESHOLD:
             below_count += 1
     return below_count >= BAD_DAY_MIN_EXERCISES
@@ -269,6 +269,36 @@ def update_game_state_on_log(db: Session, user_id: str, exercise: str,
     # Charge-up
     charge_up_result = update_charge_up(db, user_id, exercise, estimated_1rm, is_pr, best_e1rm)
 
+    # Higher-low detection (bad day + above floor)
+    higher_low = False
+    if not is_pr and gs.work_set_count >= HIGHER_LOW_MIN_WORK_SETS and gs.floor_e1rm:
+        # Check if this is a bad day by looking at current session's logs
+        latest_session = db.query(WorkoutSession).filter(
+            WorkoutSession.user_id == user_id
+        ).order_by(WorkoutSession.opened_at.desc()).first()
+
+        if latest_session:
+            session_prs = db.query(PR).filter(
+                PR.user_id == user_id,
+                PR.timestamp >= latest_session.opened_at,
+            ).all()
+
+            if len(session_prs) >= 2:
+                # Build best_e1rms dict
+                best_e1rms = {}
+                for spr in session_prs:
+                    if spr.exercise not in best_e1rms:
+                        best = db.query(func.max(PR.estimated_1rm)).filter(
+                            PR.user_id == user_id,
+                            PR.exercise == spr.exercise
+                        ).scalar()
+                        best_e1rms[spr.exercise] = best or 0
+
+                session_logs = [{"exercise": spr.exercise, "estimated_1rm": spr.estimated_1rm} for spr in session_prs]
+                is_bad_day = detect_bad_day(session_logs, best_e1rms)
+                if is_bad_day:
+                    higher_low = check_higher_low(estimated_1rm, gs.floor_e1rm, True)
+
     # Build response
     game_update = {
         "charge_up": gs.charge_up_count,
@@ -276,6 +306,7 @@ def update_game_state_on_log(db: Session, user_id: str, exercise: str,
         "is_anomaly": is_anomaly,
         "charge_up_released": False,
         "charge_up_released_count": 0,
+        "higher_low": higher_low,
     }
 
     if charge_up_result:
@@ -365,6 +396,11 @@ def compute_reframes(stage: int, exercises_game_state: dict,
             rf = build_reframe("R1", "exercise", exercise=ex_name)
             if rf:
                 reframes.append(rf)
+
+    if bad_day_detected:
+        rf = build_reframe("R3", "workout_header")
+        if rf:
+            reframes.append(rf)
 
     if swapped_exercises:
         for swap_ex in swapped_exercises:
@@ -592,8 +628,43 @@ def compute_game_state(db: Session, user_id: str, workouts: dict,
 
     # Detect bad day from current session logs
     bad_day = False
-    # (bad day detection requires current session data — evaluated per-workout
-    #  when building workout-specific game state. Simplified here.)
+    bad_day_higher_lows = {}  # exercise → True if higher-low on bad day
+    if sessions:
+        # Find the most recent active session
+        latest_letter = None
+        latest_opened = None
+        for letter, sess_info in sessions.items():
+            opened = sess_info.get("opened_at", "")
+            if not latest_opened or opened > latest_opened:
+                latest_opened = opened
+                latest_letter = letter
+
+        if latest_letter and latest_opened:
+            # Get PRs logged in this session
+            sess_start = datetime.fromisoformat(latest_opened)
+            session_prs = db.query(PR).filter(
+                PR.user_id == user_id,
+                PR.timestamp >= sess_start,
+            ).all()
+
+            if session_prs:
+                # Build best_e1rms dict from exercises_game
+                best_e1rms = {ex: data.get("best_e1rm", 0) or 0 for ex, data in exercises_game.items()}
+                session_logs = [{"exercise": pr.exercise, "estimated_1rm": pr.estimated_1rm} for pr in session_prs]
+
+                bad_day = detect_bad_day(session_logs, best_e1rms)
+
+                # If bad day detected, check higher-low per exercise
+                if bad_day and stage >= 3:
+                    for log in session_logs:
+                        gs = gs_by_exercise.get(log["exercise"])
+                        if gs and gs.work_set_count >= HIGHER_LOW_MIN_WORK_SETS:
+                            if check_higher_low(log["estimated_1rm"], gs.floor_e1rm, True):
+                                bad_day_higher_lows[log["exercise"]] = True
+
+    # Add higher-low flags to per-exercise game data
+    for ex_name in exercises_game:
+        exercises_game[ex_name]["higher_low"] = bad_day_higher_lows.get(ex_name, False)
 
     # Collect swapped exercises
     swapped_exercises = []
