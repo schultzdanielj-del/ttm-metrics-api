@@ -162,6 +162,26 @@ class CycleState(Base):
     deload_mode = Column(Boolean, nullable=False, default=False)
     cycle_started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     cycle_number = Column(Integer, nullable=False, default=1)
+    total_prs_this_cycle = Column(Integer, nullable=False, default=0)
+
+
+class GameState(Base):
+    """Per-user-per-exercise game layer state"""
+    __tablename__ = "game_state"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, index=True, nullable=False)
+    exercise = Column(String, nullable=False)
+    charge_up_count = Column(Integer, default=0, nullable=False)
+    charge_up_last_updated = Column(DateTime, nullable=True)
+    floor_e1rm = Column(Float, nullable=True)
+    first_e1rm = Column(Float, nullable=True)
+    first_log_date = Column(DateTime, nullable=True)
+    work_set_count = Column(Integer, default=0, nullable=False)
+    # Unique constraint: one row per user per exercise
+    __table_args__ = (
+        # Index for fast lookups
+        {},
+    )
 
 
 class CoachMessage(Base):
