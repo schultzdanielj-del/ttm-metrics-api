@@ -13,8 +13,9 @@ from database import (
     get_db, PR, Workout, WorkoutCompletion, UserXP,
     DashboardMember, CoreFoodsLog as CoreFoodsLogModel, WeeklyLog,
     CoreFoodsCheckin, UserNote, ExerciseSwap, WorkoutSession,
-    CoachMessage, SessionLocal
+    CoachMessage, SessionLocal, CycleState, GameState
 )
+from game_engine import compute_game_state, update_game_state_on_log
 from carousel import build_carousel_state, check_inactivity_reset, _get_workout_letters, calculate_strength_gains
 from schemas import (
     PRCreate, PRResponse, BestPRResponse,
@@ -153,6 +154,16 @@ def dashboard_log_exercise(unique_code: str, body: dict, db: Session = Depends(g
             db.delete(session)
         session = WorkoutSession(user_id=member.user_id, workout_letter=workout_letter, opened_at=now, log_count=1)
         db.add(session)
+
+    # Update game state
+    game_update = update_game_state_on_log(db, member.user_id, store_as, estimated_1rm, is_pr, old_1rm)
+
+    # Increment total_prs_this_cycle on PR
+    if is_pr:
+        cycle = db.query(CycleState).filter(CycleState.user_id == member.user_id).first()
+        if cycle:
+            cycle.total_prs_this_cycle = (cycle.total_prs_this_cycle or 0) + 1
+
     db.commit()
 
     # Discord notifications
@@ -166,7 +177,7 @@ def dashboard_log_exercise(unique_code: str, body: dict, db: Session = Depends(g
 
     all_names = _find_all_matching_names(db, member.user_id, store_as)
     updated_best = _get_best_pr_across_names(db, member.user_id, all_names) if all_names else None
-    return {"is_pr": is_pr, "new_best_pr": _format_pr(updated_best), "estimated_1rm": estimated_1rm}
+    return {"is_pr": is_pr, "new_best_pr": _format_pr(updated_best), "estimated_1rm": estimated_1rm, "game": game_update}
 
 
 @router.post("/api/dashboard/{unique_code}/log-workout", tags=["Dashboard"])
@@ -351,7 +362,10 @@ def get_full_dashboard(unique_code: str, db: Session = Depends(get_db)):
     # Strength gains for current cycle
     strength_gains = calculate_strength_gains(db, uid)
 
-    return {"username": member.username, "full_name": member.full_name, "workouts": workouts, "best_prs": best_prs, "last_workout_dates": last_workout_dates, "core_foods": core_foods, "notes": notes, "swaps": swaps, "sessions": sessions, "session_prs": session_prs, "coach_messages": coach_messages, "carousel": carousel, "strength_gains": strength_gains}
+    # Game state
+    game = compute_game_state(db, uid, workouts, sessions, swaps, carousel.get("deload_mode", False) if carousel else False)
+
+    return {"username": member.username, "full_name": member.full_name, "workouts": workouts, "best_prs": best_prs, "last_workout_dates": last_workout_dates, "core_foods": core_foods, "notes": notes, "swaps": swaps, "sessions": sessions, "session_prs": session_prs, "coach_messages": coach_messages, "carousel": carousel, "strength_gains": strength_gains, "game": game}
 
 
 @router.post("/api/weekly-logs", tags=["Weekly Logs"])
