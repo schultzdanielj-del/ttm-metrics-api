@@ -15,7 +15,7 @@ from database import (
     CoreFoodsCheckin, UserNote, ExerciseSwap, WorkoutSession,
     CoachMessage, SessionLocal, CycleState, GameState
 )
-from game_engine import compute_game_state, update_game_state_on_log
+from game_engine import compute_game_state, update_game_state_on_log, compute_journey_full
 from carousel import build_carousel_state, check_inactivity_reset, _get_workout_letters, calculate_strength_gains
 from schemas import (
     PRCreate, PRResponse, BestPRResponse,
@@ -366,6 +366,16 @@ def get_full_dashboard(unique_code: str, db: Session = Depends(get_db)):
     game = compute_game_state(db, uid, workouts, sessions, swaps, carousel.get("deload_mode", False) if carousel else False)
 
     return {"username": member.username, "full_name": member.full_name, "workouts": workouts, "best_prs": best_prs, "last_workout_dates": last_workout_dates, "core_foods": core_foods, "notes": notes, "swaps": swaps, "sessions": sessions, "session_prs": session_prs, "coach_messages": coach_messages, "carousel": carousel, "strength_gains": strength_gains, "game": game}
+
+
+@router.get("/api/dashboard/{unique_code}/journey", tags=["Dashboard"])
+def get_journey_arc(unique_code: str, db: Session = Depends(get_db)):
+    """Full journey arc data — per-exercise history, aggregate strength, milestones."""
+    member = _resolve_member(unique_code, db)
+    journey = compute_journey_full(db, member.user_id)
+    if not journey:
+        return {"exercises": [], "aggregate": None, "cycles": [], "core_foods_heatmap": {}, "milestones": [], "stagnant_exercises": []}
+    return journey
 
 
 @router.post("/api/weekly-logs", tags=["Weekly Logs"])

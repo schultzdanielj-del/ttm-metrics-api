@@ -484,15 +484,204 @@ def compute_journey_data(db: Session, user_id: str, stage: int) -> dict | None:
 def _compute_cycle_history(db: Session, user_id: str, cycle_state: CycleState) -> list:
     """
     Derive per-cycle stats from PR data and cycle boundaries.
-    This is approximate — we use cycle_started_at and work backwards.
-    For more accuracy, we'd need to store cycle boundaries explicitly.
+    
+    Limitation: CycleState only stores the CURRENT cycle's start, not
+    historical boundaries. For cycle 2+ we treat everything before
+    cycle_started_at as "previous cycles" lumped together. When we add
+    a CycleHistory table, this becomes precise.
+    
+    For now: if cycle_number >= 2, compute stats for PRs before current
+    cycle as "cycle 1..N-1" aggregate. Not perfect but gives compounding
+    data that's directionally correct.
     """
-    # For now, return empty — this will be refined when we have
-    # explicit cycle boundary tracking. The current CycleState only
-    # stores the CURRENT cycle's start, not historical boundaries.
-    # TODO: When building the journey endpoint, derive boundaries from
-    # WorkoutCompletion timestamps or add a CycleHistory table.
-    return []
+    if not cycle_state or cycle_state.cycle_number < 2:
+        return []
+
+    cycle_start = cycle_state.cycle_started_at
+
+    # All PRs before current cycle = previous cycles aggregate
+    prev_prs = db.query(PR).filter(
+        PR.user_id == user_id,
+        PR.timestamp < cycle_start,
+    ).order_by(PR.timestamp.asc()).all()
+
+    if not prev_prs:
+        return []
+
+    # Group by exercise, compute per-exercise change across all previous cycles
+    by_exercise = {}
+    for pr in prev_prs:
+        if pr.exercise not in by_exercise:
+            by_exercise[pr.exercise] = []
+        by_exercise[pr.exercise].append(pr)
+
+    ex_changes = []
+    total_prs_count = 0
+    for ex_name, prs in by_exercise.items():
+        total_prs_count += len(prs)
+        if len(prs) < 2:
+            continue
+        first_1rm = prs[0].estimated_1rm
+        latest_1rm = prs[-1].estimated_1rm
+        if first_1rm and first_1rm > 0:
+            change_pct = ((latest_1rm - first_1rm) / first_1rm) * 100
+            ex_changes.append(change_pct)
+
+    avg_change = round(sum(ex_changes) / len(ex_changes), 1) if ex_changes else 0.0
+
+    # Return as a single aggregate entry for all previous cycles
+    # When cycle boundary tracking exists, this becomes per-cycle entries
+    return [{
+        "cycle": f"1-{cycle_state.cycle_number - 1}" if cycle_state.cycle_number > 2 else "1",
+        "prs": total_prs_count,
+        "avg_change_pct": avg_change,
+        "started": prev_prs[0].timestamp.isoformat() if prev_prs else None,
+        "ended": cycle_start.isoformat(),
+    }]
+
+
+def compute_journey_full(db: Session, user_id: str) -> dict | None:
+    """
+    Compute full journey arc data for the /journey endpoint.
+    Returns per-exercise history, aggregate strength, cycle history,
+    core foods heatmap, and milestones.
+    """
+    game_states = db.query(GameState).filter(
+        GameState.user_id == user_id,
+        GameState.first_e1rm.isnot(None)
+    ).all()
+
+    if not game_states:
+        return None
+
+    # Per-exercise data with full PR history
+    exercises = []
+    total_first = 0.0
+    total_best = 0.0
+
+    for gs in game_states:
+        if not gs.first_e1rm or gs.first_e1rm <= 0:
+            continue
+
+        # Get all PRs for this exercise, ordered by date
+        all_prs = db.query(PR).filter(
+            PR.user_id == user_id,
+            PR.exercise == gs.exercise
+        ).order_by(PR.timestamp.asc()).all()
+
+        if not all_prs:
+            continue
+
+        # Build history: each logged e1RM with date
+        # Track running best to mark which were PRs at the time
+        running_best = 0.0
+        history = []
+        for pr in all_prs:
+            was_pr = pr.estimated_1rm > running_best
+            if was_pr:
+                running_best = pr.estimated_1rm
+            history.append({
+                "date": pr.timestamp.date().isoformat(),
+                "e1rm": round(pr.estimated_1rm, 1),
+                "is_pr": was_pr,
+            })
+
+        best_e1rm = running_best
+        change_pct = ((best_e1rm - gs.first_e1rm) / gs.first_e1rm) * 100
+
+        total_first += gs.first_e1rm
+        total_best += best_e1rm
+
+        exercises.append({
+            "name": gs.exercise,
+            "first_e1rm": round(gs.first_e1rm, 1),
+            "best_e1rm": round(best_e1rm, 1),
+            "change_pct": round(change_pct, 1),
+            "first_log_date": gs.first_log_date.date().isoformat() if gs.first_log_date else None,
+            "work_set_count": gs.work_set_count,
+            "history": history,
+        })
+
+    if not exercises or total_first <= 0:
+        return None
+
+    # Sort exercises by change_pct descending (biggest gains first)
+    exercises.sort(key=lambda e: e["change_pct"], reverse=True)
+
+    # Aggregate
+    total_change_pct = ((total_best - total_first) / total_first) * 100
+
+    # Milestones
+    ratio = total_best / total_first - 1
+    milestones = []
+    for threshold in MILESTONE_THRESHOLDS:
+        if ratio >= threshold:
+            milestones.append({
+                "threshold": f"{int(threshold * 100)}%",
+                "reached": True,
+            })
+
+    # Cycle history
+    cycle = db.query(CycleState).filter(CycleState.user_id == user_id).first()
+    cycles_completed = (cycle.cycle_number - 1) if cycle else 0
+    cycle_history = _compute_cycle_history(db, user_id, cycle) if cycle and cycles_completed > 0 else []
+
+    # Core foods heatmap
+    checkins = db.query(CoreFoodsCheckin).filter(
+        CoreFoodsCheckin.user_id == user_id
+    ).all()
+    core_foods_heatmap = {c.date: True for c in checkins}
+
+    # R5 detection: stagnant exercises while others progress
+    # Find exercises with 0 PRs in last N work sets while others have recent PRs
+    stagnant_exercises = _detect_stagnant_exercises(db, user_id, game_states, cycle)
+
+    return {
+        "exercises": exercises,
+        "aggregate": {
+            "total_first": round(total_first, 1),
+            "total_best": round(total_best, 1),
+            "total_change_pct": round(total_change_pct, 1),
+        },
+        "cycles": cycle_history,
+        "core_foods_heatmap": core_foods_heatmap,
+        "milestones": milestones,
+        "stagnant_exercises": stagnant_exercises,
+    }
+
+
+def _detect_stagnant_exercises(db: Session, user_id: str,
+                                game_states: list, cycle_state) -> list:
+    """
+    Detect exercises that haven't PR'd recently while others have.
+    For R5 reframe in journey arc view.
+    Returns list of exercise names that are stagnant.
+    """
+    if not cycle_state or cycle_state.cycle_number < 3:
+        return []
+
+    cycle_start = cycle_state.cycle_started_at
+
+    # Get exercises with PRs in current cycle
+    recent_pr_exercises = set()
+    recent_prs = db.query(PR.exercise).filter(
+        PR.user_id == user_id,
+        PR.timestamp >= cycle_start,
+    ).distinct().all()
+    for (ex,) in recent_prs:
+        recent_pr_exercises.add(ex)
+
+    # Find exercises with enough history but no recent PRs
+    stagnant = []
+    for gs in game_states:
+        if gs.work_set_count >= HIGHER_LOW_MIN_WORK_SETS and gs.exercise not in recent_pr_exercises:
+            stagnant.append(gs.exercise)
+
+    # Only flag as stagnant if SOME exercises ARE progressing
+    if not recent_pr_exercises or not stagnant:
+        return []
+
+    return stagnant
 
 
 # ============================================================================
