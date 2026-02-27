@@ -60,8 +60,11 @@ def _get_time_ref(date_str: str) -> str:
         return target.strftime("%A")  # day name
 
 
-def _post_message(content: str) -> str | None:
+def _post_message(content: str, user_id: str = "") -> str | None:
     """Post a message to #pr-city. Returns message ID on success, None on failure."""
+    # Skip notifications for test users
+    if user_id.startswith("TEST_"):
+        return None
     token = _get_bot_token()
     if not token:
         return None
@@ -129,6 +132,8 @@ def _find_and_delete_bot_message(display_name: str, match_text: str):
 
 def post_core_foods_notification(db: Session, user_id: str, date: str, checked: bool):
     """Post or delete a core foods notification in #pr-city."""
+    if user_id.startswith("TEST_"):
+        return
     name = _get_display_name(db, user_id)
     if checked:
         time_ref = _get_time_ref(date)
@@ -142,6 +147,8 @@ def post_core_foods_notification(db: Session, user_id: str, date: str, checked: 
 
 def post_pr_notification(db: Session, user_id: str, exercise: str, old_1rm: float, new_1rm: float):
     """Post a PR notification in #pr-city when user beats their personal best."""
+    if user_id.startswith("TEST_"):
+        return
     if old_1rm <= 0:
         return
     improvement = ((new_1rm - old_1rm) / old_1rm) * 100
@@ -158,6 +165,8 @@ def post_pr_notification(db: Session, user_id: str, exercise: str, old_1rm: floa
 
 def post_pr_upgrade_notification(db: Session, user_id: str, exercise: str):
     """Post a PR notification when user upgrades from bodyweight to weighted on an exercise."""
+    if user_id.startswith("TEST_"):
+        return
     name = _get_display_name(db, user_id)
     # Delete any existing PR notification for this exercise first (re-log scenario)
     _find_and_delete_bot_message(name, f"personal best on {exercise}")
@@ -169,12 +178,16 @@ def post_pr_upgrade_notification(db: Session, user_id: str, exercise: str):
 
 def delete_pr_notification(db: Session, user_id: str, exercise: str):
     """Delete a PR notification from #pr-city when a re-log undoes a PR."""
+    if user_id.startswith("TEST_"):
+        return
     name = _get_display_name(db, user_id)
     _find_and_delete_bot_message(name, f"personal best on {exercise}")
 
 
 def post_workout_completion_notification(db: Session, user_id: str, letter: str, position_started_at=None):
     """Post a clean sweep notification ONLY if every exercise in the workout got a PR during this session window."""
+    if user_id.startswith("TEST_"):
+        return
     if not position_started_at:
         return
     
@@ -231,6 +244,8 @@ def post_workout_completion_notification(db: Session, user_id: str, letter: str,
 
 def post_deload_notification(db: Session, user_id: str, strength_pct: float = None):
     """Post a deload notification in #pr-city when a user completes a training cycle."""
+    if user_id.startswith("TEST_"):
+        return
     name = _get_display_name(db, user_id)
     if strength_pct is not None and strength_pct > 0:
         content = f"{name} has finished a training cycle and got {strength_pct:.1f}% stronger, time for a well deserved break"
