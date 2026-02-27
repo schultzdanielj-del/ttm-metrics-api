@@ -73,3 +73,64 @@ def admin_rebuild_prs(body: dict, db: Session = Depends(get_db)):
         "inserted": inserted,
         "after": total_after
     }
+
+
+@router.post("/api/admin/backfill-game-state", tags=["Admin"])
+def admin_backfill_game_state(key: str = "", db: Session = Depends(get_db)):
+    """One-time backfill: populate GameState from PR history."""
+    if key != ADMIN_KEY:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+
+    from database import GameState, CycleState
+    from sqlalchemy import text
+
+    # Add total_prs_this_cycle column if missing
+    col_added = False
+    try:
+        db.execute(text("ALTER TABLE cycle_state ADD COLUMN total_prs_this_cycle INTEGER NOT NULL DEFAULT 0"))
+        db.commit()
+        col_added = True
+    except Exception:
+        db.rollback()
+
+    # Backfill GameState
+    user_exercises = db.query(PR.user_id, PR.exercise).group_by(PR.user_id, PR.exercise).all()
+    created = 0
+    skipped = 0
+
+    for user_id, exercise in user_exercises:
+        existing = db.query(GameState).filter(GameState.user_id == user_id, GameState.exercise == exercise).first()
+        if existing:
+            skipped += 1
+            continue
+
+        prs = db.query(PR).filter(PR.user_id == user_id, PR.exercise == exercise).order_by(PR.timestamp.asc()).all()
+        if not prs:
+            continue
+
+        gs = GameState(
+            user_id=user_id, exercise=exercise, charge_up_count=0,
+            floor_e1rm=min(p.estimated_1rm for p in prs),
+            first_e1rm=prs[0].estimated_1rm,
+            first_log_date=prs[0].timestamp,
+            work_set_count=len(prs)
+        )
+        db.add(gs)
+        created += 1
+
+    # Backfill total_prs_this_cycle
+    cycles = db.query(CycleState).all()
+    for cycle in cycles:
+        pr_count = db.query(func.count(PR.id)).filter(
+            PR.user_id == cycle.user_id, PR.timestamp >= cycle.cycle_started_at
+        ).scalar()
+        cycle.total_prs_this_cycle = pr_count or 0
+
+    db.commit()
+    return {
+        "status": "success",
+        "column_added": col_added,
+        "game_states_created": created,
+        "game_states_skipped": skipped,
+        "cycles_updated": len(cycles)
+    }
