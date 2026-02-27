@@ -315,7 +315,8 @@ def build_reframe(reframe_type: str, location: str, exercise: str | None = None)
 def compute_reframes(stage: int, exercises_game_state: dict,
                      return_from_disruption: bool, core_foods_during_gap: bool,
                      bad_day_detected: bool, deload_mode: bool,
-                     swapped_exercises: list | None = None) -> list:
+                     swapped_exercises: list | None = None,
+                     cycle_summary: dict | None = None) -> list:
     """
     Compute all active reframes for the current state.
     Returns list of reframe dicts for the API response.
@@ -336,6 +337,24 @@ def compute_reframes(stage: int, exercises_game_state: dict,
         rf = build_reframe("R6", "deload_card")
         if rf:
             reframes.append(rf)
+
+        # R2: PR frequency dropping (cycle 3+, fewer PRs than previous)
+        if cycle_summary and stage >= 3:
+            cs = cycle_summary
+            prev = cs.get("previous_cycle")
+            if cs.get("cycle_number", 0) >= 3 and prev:
+                if cs.get("total_prs", 0) < prev.get("total_prs", 0):
+                    rf = build_reframe("R2", "cycle_summary")
+                    if rf:
+                        reframes.append(rf)
+
+            # R13: Slow progress after fast phase (cycle 3+, avg change < 5%)
+            if cs.get("cycle_number", 0) >= 3:
+                avg = cs.get("avg_strength_change_pct", 0)
+                if 0 < avg < 5:
+                    rf = build_reframe("R13", "cycle_summary")
+                    if rf:
+                        reframes.append(rf)
 
     if stage < 3:
         return reframes
@@ -444,6 +463,96 @@ def _compute_cycle_history(db: Session, user_id: str, cycle_state: CycleState) -
 # Full Game State for /full Response
 # ============================================================================
 
+def compute_cycle_summary(db: Session, user_id: str) -> dict | None:
+    """
+    Compute cycle summary for display during deload.
+    Includes: total PRs, avg strength change, previous cycle comparison,
+    compounding total since day 1, and milestone detection.
+    """
+    cycle = db.query(CycleState).filter(CycleState.user_id == user_id).first()
+    if not cycle:
+        return None
+
+    cycle_num = cycle.cycle_number if hasattr(cycle, 'cycle_number') else 1
+    total_prs = cycle.total_prs_this_cycle if hasattr(cycle, 'total_prs_this_cycle') else 0
+
+    # Current cycle strength change — PRs logged since cycle_started_at
+    cycle_start = cycle.cycle_started_at
+    cycle_prs = db.query(PR).filter(
+        PR.user_id == user_id,
+        PR.timestamp >= cycle_start,
+    ).order_by(PR.timestamp.asc()).all()
+
+    # Group by exercise, calc per-exercise change
+    by_exercise = {}
+    for pr in cycle_prs:
+        if pr.exercise not in by_exercise:
+            by_exercise[pr.exercise] = []
+        by_exercise[pr.exercise].append(pr)
+
+    ex_changes = []
+    for ex_name, prs in by_exercise.items():
+        if len(prs) < 2:
+            continue
+        first_1rm = prs[0].estimated_1rm
+        latest_1rm = prs[-1].estimated_1rm
+        if first_1rm and first_1rm > 0:
+            change_pct = ((latest_1rm - first_1rm) / first_1rm) * 100
+            ex_changes.append(change_pct)
+
+    avg_strength_change = round(sum(ex_changes) / len(ex_changes), 1) if ex_changes else 0.0
+
+    # Previous cycle comparison (if cycle 2+)
+    previous_cycle = None
+    if cycle_num >= 2:
+        # Find PRs from the previous cycle by looking at PRs before current cycle start
+        # and after the cycle before that
+        prev_prs = db.query(PR).filter(
+            PR.user_id == user_id,
+            PR.timestamp < cycle_start,
+        ).order_by(PR.timestamp.desc()).all()
+
+        if prev_prs:
+            previous_cycle = {
+                "total_prs": len(prev_prs),  # rough — all PRs before this cycle
+                "cycle_number": cycle_num - 1,
+            }
+
+    # Compounding total since day 1 (if cycle 3+)
+    compounding_total_pct = None
+    all_gs = db.query(GameState).filter(GameState.user_id == user_id).all()
+    total_first = sum(gs.first_e1rm for gs in all_gs if gs.first_e1rm)
+    if total_first > 0:
+        # Get current best e1RM per exercise
+        total_best = 0.0
+        for gs in all_gs:
+            best = db.query(func.max(PR.estimated_1rm)).filter(
+                PR.user_id == user_id,
+                PR.exercise == gs.exercise
+            ).scalar()
+            if best:
+                total_best += best
+        if total_best > total_first:
+            compounding_total_pct = round(((total_best - total_first) / total_first) * 100, 1)
+
+    # Milestone detection
+    milestone = None
+    if compounding_total_pct is not None:
+        for threshold in [100, 50, 25]:
+            if compounding_total_pct >= threshold:
+                milestone = threshold
+                break
+
+    return {
+        "total_prs": total_prs,
+        "avg_strength_change_pct": avg_strength_change,
+        "cycle_number": cycle_num,
+        "previous_cycle": previous_cycle,
+        "compounding_total_pct": compounding_total_pct,
+        "milestone": milestone,
+    }
+
+
 def compute_game_state(db: Session, user_id: str, workouts: dict,
                        sessions: dict, swaps: dict,
                        deload_mode: bool) -> dict:
@@ -494,6 +603,11 @@ def compute_game_state(db: Session, user_id: str, workouts: dict,
         elif isinstance(swap_info, str):
             swapped_exercises.append(swap_info)
 
+    # Cycle summary (populated when deload is active) — computed before reframes since R2/R13 need it
+    cycle_summary = None
+    if deload_mode:
+        cycle_summary = compute_cycle_summary(db, user_id)
+
     # Compute reframes
     reframes = compute_reframes(
         stage=stage,
@@ -502,20 +616,12 @@ def compute_game_state(db: Session, user_id: str, workouts: dict,
         core_foods_during_gap=cf_during_gap,
         bad_day_detected=bad_day,
         deload_mode=deload_mode,
-        swapped_exercises=swapped_exercises if stage >= 3 else None
+        swapped_exercises=swapped_exercises if stage >= 3 else None,
+        cycle_summary=cycle_summary
     )
 
     # Journey data
     journey = compute_journey_data(db, user_id, stage)
-
-    # Cycle summary (populated when deload is active)
-    cycle_summary = None
-    if deload_mode:
-        cycle = db.query(CycleState).filter(CycleState.user_id == user_id).first()
-        if cycle:
-            cycle_summary = {
-                "total_prs": cycle.total_prs_this_cycle if hasattr(cycle, 'total_prs_this_cycle') else 0,
-            }
 
     return {
         "stage": stage,
